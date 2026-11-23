@@ -10,14 +10,28 @@ import { Workspace } from './pages/Workspace'
 */
 const routes = [
   { path: '/', title: 'Overview', render: () => <Workspace view="overview" /> },
+  { path: '/audit', title: 'Footprint audit', render: () => <Workspace view="footprint" /> },
+  { path: '/diff/:id', title: 'Footprint audit', render: () => <Workspace view="diff" /> },
+  { path: '/redteam', title: 'Red-team lab', render: () => <Workspace view="redteam" /> },
+  { path: '/redteam/:id', title: 'Red-team report', render: () => <Workspace view="redteamRun" /> },
+  { path: '/artifacts', title: 'Fix artifacts', render: () => <Workspace view="artifacts" /> },
+  { path: '/artifacts/:id', title: 'Draft', render: () => <Workspace view="artifact" /> },
   { path: '/documents', title: 'Documents', render: () => <Workspace view="library" /> },
   { path: '/documents/:id', title: 'Audit', render: () => <Workspace view="document" /> },
+  { path: '/brief/:id', title: 'Mini-audit', render: () => <Workspace view="brief" /> },
 ]
 
 function resolve(path: string) {
   const exact = routes.find((route) => route.path === path)
   if (exact) return exact
-  return path.startsWith('/documents/') ? routes[2] : null
+  const nested: [string, (typeof routes)[number]][] = [
+    ['/documents/', routes[8]],
+    ['/diff/', routes[2]],
+    ['/redteam/', routes[4]],
+    ['/artifacts/', routes[6]],
+    ['/brief/', routes[9]],
+  ]
+  return nested.find(([prefix]) => path.startsWith(prefix))?.[1] ?? null
 }
 
 export function App() {

@@ -31,7 +31,11 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+import artifacts
 import auditor
+import diff_engine
+import fetcher
+import redteam
 import reporter
 from rules import NA_STATUS, OPEN_STATUSES, REGULATIONS
 from scraper import DEFAULT_MAX_CHARS, Section, format_sections, kind_for_path, truncate
@@ -47,6 +51,61 @@ MIN_DOCUMENT_CHARS = 100
 FILE_TYPES = {".pdf": "pdf", ".docx": "docx", ".txt": "txt", ".md": "md"}
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS briefs (
+    id TEXT PRIMARY KEY,
+    company TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS url_snapshots (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    url TEXT NOT NULL,
+    final_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    chars INTEGER NOT NULL,
+    truncated INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    text TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS diffs (
+    id TEXT PRIMARY KEY,
+    company TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redteam_runs (
+    id TEXT PRIMARY KEY,
+    company TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    target TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redteam_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    probe_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    status TEXT NOT NULL,
+    observed TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    company TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -283,6 +342,18 @@ def health() -> dict[str, Any]:
         # Audits share one sliding window, so this is the whole process's spend.
         "tokenBudget": auditor.shared_budget().snapshot(),
         "regulations": [{"id": key, "name": REGULATIONS[key]["name"], "focus": REGULATIONS[key]["focus"]} for key in REGULATIONS],
+        "frameworks": diff_engine.framework_catalog(),
+        "redteamProbes": redteam.probe_catalog(),
+        "artifactKinds": [
+            {"id": key, "title": meta["title"], "purpose": meta["purpose"]}
+            for key, meta in artifacts.KINDS.items()
+        ],
+        "fetchLimits": {
+            "maxBytes": fetcher.MAX_BYTES,
+            "maxChars": fetcher.KIND_MAX_CHARS,
+            "timeoutSeconds": fetcher.DEFAULT_TIMEOUT,
+            "maxProbeResponseBytes": redteam.MAX_RESPONSE_BYTES,
+        },
     }
 
 
@@ -370,6 +441,414 @@ def reaudit(document_id: str, background: BackgroundTasks) -> dict[str, Any]:
     fresh = _row(document_id)
     assert fresh is not None
     return _summary(fresh)
+
+
+@app.post("/api/brief", status_code=201)
+def create_brief(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compare homepage copy with the privacy policy into a 1-page brief."""
+    company = str(payload.get("company") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    homepage = str(payload.get("homepage") or "").strip()
+    privacy = str(payload.get("privacy") or "").strip()
+
+    if not company:
+        raise HTTPException(400, "Enter the company name (and URL if you have it).")
+    if len(homepage) < 40:
+        raise HTTPException(400, "Paste at least a few sentences of homepage or product copy.")
+    if len(privacy) < 40:
+        raise HTTPException(400, "Paste at least a few sentences of the privacy policy.")
+
+    try:
+        brief = auditor.generate_brief(company, url, homepage, privacy)
+    except Exception as exc:  # noqa: BLE001 - the UI shows one clean message
+        raise HTTPException(502, f"The mini-audit failed: {type(exc).__name__}: {exc}") from exc
+
+    brief_id = uuid.uuid4().hex[:12]
+    created_at = _now()
+    brief["id"] = brief_id
+    brief["createdAt"] = created_at
+    with _lock:
+        _db().execute(
+            "INSERT INTO briefs (id, company, url, created_at, payload) VALUES (?, ?, ?, ?, ?)",
+            (brief_id, company, url, created_at, json.dumps(brief)),
+        )
+        _db().commit()
+    return brief
+
+
+@app.get("/api/briefs/{brief_id}")
+def get_brief(brief_id: str) -> dict[str, Any]:
+    with _lock:
+        row = _db().execute("SELECT payload FROM briefs WHERE id = ?", (brief_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "No such mini-audit.")
+    payload = json.loads(row["payload"])
+    payload["id"] = brief_id
+    return payload
+
+
+# --------------------------------------------------------------------------- #
+# Footprint audit: live sources + claim-vs-policy diff
+# --------------------------------------------------------------------------- #
+
+
+def _snapshot(snapshot_id: str, kind: str) -> sqlite3.Row | None:
+    if not snapshot_id:
+        return None
+    with _lock:
+        row = _db().execute("SELECT * FROM url_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"The saved {kind} snapshot no longer exists. Fetch or paste it again.")
+    return row
+
+
+def _stored_payload(table: str, row_id: str) -> dict[str, Any] | None:
+    """Load a stored JSON payload from a known table name."""
+    if not row_id:
+        return None
+    if table not in ("diffs", "redteam_runs", "artifacts", "briefs"):
+        raise ValueError(f"Unsupported table {table!r}")
+    with _lock:
+        row = _db().execute(f"SELECT payload FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, f"No such {table[:-1].replace('_', ' ')}.")
+    try:
+        return json.loads(row["payload"])
+    except json.JSONDecodeError:
+        return None
+
+
+@app.post("/api/fetch")
+def fetch_sources(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fetch up to three public pages and return cleaned text for the audit.
+
+    A blocked or empty page is reported per source rather than failing the
+    request, because the workspace falls back to manual paste for that one box.
+    """
+    raw_urls = payload.get("urls") if isinstance(payload.get("urls"), dict) else payload
+    targets = {kind: str(raw_urls.get(kind) or "").strip() for kind in fetcher.PAGE_KINDS}
+    if not any(targets.values()):
+        raise HTTPException(400, "Enter at least one URL to fetch.")
+
+    snapshots, errors = fetcher.fetch_many(targets)
+    saved: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        snapshot_id = uuid.uuid4().hex[:12]
+        with _lock:
+            _db().execute(
+                "INSERT INTO url_snapshots (id, kind, url, final_url, title, status, chars, truncated, created_at, text)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    snapshot_id,
+                    snapshot.kind,
+                    snapshot.url,
+                    snapshot.final_url,
+                    snapshot.title,
+                    snapshot.status,
+                    snapshot.chars,
+                    1 if snapshot.truncated else 0,
+                    snapshot.fetched_at,
+                    snapshot.text,
+                ),
+            )
+            _db().commit()
+        item = {"id": snapshot_id, **snapshot.public()}
+        saved.append(item)
+
+    return {
+        "snapshots": saved,
+        "errors": errors,
+        "limits": {
+            "maxBytes": fetcher.MAX_BYTES,
+            "maxChars": fetcher.KIND_MAX_CHARS,
+            "timeoutSeconds": fetcher.DEFAULT_TIMEOUT,
+        },
+    }
+
+
+@app.post("/api/diffs", status_code=201)
+def create_diff(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compare public claims with the privacy policy into a severity-rated diff."""
+    company = str(payload.get("company") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    claims = str(payload.get("claims") or "").strip()
+    policy = str(payload.get("policy") or "").strip()
+    claims_source = str(payload.get("claimsSource") or "").strip()
+    policy_source = str(payload.get("policySource") or "").strip()
+
+    claims_row = _snapshot(str(payload.get("claimsSnapshotId") or ""), "claims")
+    if claims_row is not None:
+        claims = claims or claims_row["text"]
+        claims_source = claims_source or claims_row["final_url"]
+    policy_row = _snapshot(str(payload.get("policySnapshotId") or ""), "policy")
+    if policy_row is not None:
+        policy = policy or policy_row["text"]
+        policy_source = policy_source or policy_row["final_url"]
+
+    if not company:
+        raise HTTPException(400, "Enter the company name.")
+    if len(claims) < 40:
+        raise HTTPException(400, "Add at least a few sentences of homepage, product or pricing copy.")
+    if len(policy) < 40:
+        raise HTTPException(400, "Add at least a few sentences of the privacy policy.")
+
+    try:
+        result = diff_engine.generate_diff(
+            company,
+            url,
+            claims,
+            policy,
+            claims_source=claims_source,
+            policy_source=policy_source,
+        )
+    except Exception as exc:  # noqa: BLE001 - one clean message for the UI
+        raise HTTPException(502, f"The footprint audit failed: {type(exc).__name__}: {exc}") from exc
+
+    diff_id = uuid.uuid4().hex[:12]
+    result["id"] = diff_id
+    result["createdAt"] = _now()
+    with _lock:
+        _db().execute(
+            "INSERT INTO diffs (id, company, created_at, payload) VALUES (?, ?, ?, ?)",
+            (diff_id, company, result["createdAt"], json.dumps(result)),
+        )
+        _db().commit()
+    return result
+
+
+@app.get("/api/diffs")
+def list_diffs() -> dict[str, Any]:
+    with _lock:
+        rows = _db().execute("SELECT id, company, created_at, payload FROM diffs ORDER BY created_at DESC").fetchall()
+    items = []
+    for row in rows:
+        try:
+            stored = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            continue
+        items.append(
+            {
+                "id": row["id"],
+                "company": row["company"],
+                "createdAt": row["created_at"],
+                "summary": stored.get("summary", ""),
+                "counts": stored.get("counts", {"critical": 0, "high": 0, "medium": 0}),
+            }
+        )
+    return {"diffs": items}
+
+
+@app.get("/api/diffs/{diff_id}")
+def get_diff(diff_id: str) -> dict[str, Any]:
+    stored = _stored_payload("diffs", diff_id)
+    if stored is None:
+        raise HTTPException(404, "No such footprint audit.")
+    stored["id"] = diff_id
+    return stored
+
+
+# --------------------------------------------------------------------------- #
+# Red-team lab
+# --------------------------------------------------------------------------- #
+
+
+def _redteam_summary(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        stored = json.loads(row["payload"])
+    except json.JSONDecodeError:
+        stored = {}
+    return {
+        "id": row["id"],
+        "company": row["company"],
+        "mode": row["mode"],
+        "target": row["target"],
+        "createdAt": row["created_at"],
+        "product": stored.get("product", ""),
+        "counts": stored.get("counts", {"pass": 0, "fail": 0, "inconclusive": 0, "total": 0}),
+    }
+
+
+@app.post("/api/redteam", status_code=201)
+def create_redteam_run(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run the bounded probe suite against a live endpoint or a product spec."""
+    company = str(payload.get("company") or "").strip()
+    product = str(payload.get("product") or "").strip()
+    mode = str(payload.get("mode") or "simulated").strip().lower()
+    if not company:
+        raise HTTPException(400, "Enter the company or product owner name.")
+
+    raw_probes = payload.get("probes")
+    probe_ids = [str(item) for item in raw_probes] if isinstance(raw_probes, list) else None
+
+    try:
+        run = redteam.run_redteam(
+            company,
+            product,
+            mode=mode,
+            endpoint=str(payload.get("endpoint") or "").strip(),
+            headers=payload.get("headers") or "",
+            model=str(payload.get("model") or "").strip(),
+            spec=str(payload.get("spec") or "").strip(),
+            probe_ids=probe_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except redteam.TargetError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"The red-team run failed: {type(exc).__name__}: {exc}") from exc
+
+    run_id = uuid.uuid4().hex[:12]
+    created_at = _now()
+    run["id"] = run_id
+    run["createdAt"] = created_at
+
+    with _lock:
+        _db().execute(
+            "INSERT INTO redteam_runs (id, company, mode, target, created_at, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, company, mode, run["target"], created_at, json.dumps(run)),
+        )
+        for result in run["results"]:
+            _db().execute(
+                "INSERT INTO redteam_results (run_id, probe_id, category, status, observed, payload)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    result["probeId"],
+                    result["category"],
+                    result["status"],
+                    result["observed"],
+                    json.dumps(result),
+                ),
+            )
+        _db().commit()
+    return run
+
+
+@app.get("/api/redteam")
+def list_redteam_runs() -> dict[str, Any]:
+    with _lock:
+        rows = _db().execute(
+            "SELECT id, company, mode, target, created_at, payload FROM redteam_runs ORDER BY created_at DESC"
+        ).fetchall()
+    return {"runs": [_redteam_summary(row) for row in rows]}
+
+
+@app.get("/api/redteam/{run_id}")
+def get_redteam_run(run_id: str) -> dict[str, Any]:
+    stored = _stored_payload("redteam_runs", run_id)
+    if stored is None:
+        raise HTTPException(404, "No such red-team run.")
+    stored["id"] = run_id
+    with _lock:
+        rows = _db().execute(
+            "SELECT payload FROM redteam_results WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+    # The per-result table is the transcript of record; fall back to the payload
+    # only if a row was written before the results were persisted.
+    transcripts = []
+    for row in rows:
+        try:
+            transcripts.append(json.loads(row["payload"]))
+        except json.JSONDecodeError:
+            continue
+    if transcripts:
+        stored["results"] = transcripts
+    return stored
+
+
+# --------------------------------------------------------------------------- #
+# Fix artifacts
+# --------------------------------------------------------------------------- #
+
+
+def _artifact_summary(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        stored = json.loads(row["payload"])
+    except json.JSONDecodeError:
+        stored = {}
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "company": row["company"],
+        "createdAt": row["created_at"],
+        "title": stored.get("title", ""),
+        "placeholders": stored.get("placeholders", []),
+    }
+
+
+@app.post("/api/artifacts", status_code=201)
+def create_artifact(payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate an operational draft from stored audit evidence."""
+    kind = str(payload.get("kind") or "").strip()
+    company = str(payload.get("company") or "").strip()
+    product = str(payload.get("product") or "").strip()
+    if not company:
+        raise HTTPException(400, "Enter the company name.")
+    if kind not in artifacts.KINDS:
+        raise HTTPException(400, f"Choose one of: {', '.join(artifacts.KIND_IDS)}.")
+
+    diff_id = str(payload.get("diffId") or "").strip()
+    run_id = str(payload.get("redteamRunId") or "").strip()
+    brief_id = str(payload.get("briefId") or "").strip()
+    diff = _stored_payload("diffs", diff_id)
+    run = _stored_payload("redteam_runs", run_id)
+    brief = _stored_payload("briefs", brief_id)
+
+    evidence = artifacts.evidence_from_findings(diff=diff, redteam=run, brief=brief)
+    if not evidence and not product:
+        raise HTTPException(
+            400,
+            "Link a footprint audit or red-team run, or describe the product so the draft has context.",
+        )
+
+    try:
+        artifact = artifacts.generate_artifact(
+            kind,
+            company,
+            product,
+            evidence=evidence,
+            notes=str(payload.get("notes") or "").strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"The draft could not be generated: {type(exc).__name__}: {exc}") from exc
+
+    artifact_id = uuid.uuid4().hex[:12]
+    sources = [
+        name
+        for name, value in (("footprint", diff_id), ("red-team", run_id), ("mini-audit", brief_id))
+        if value
+    ]
+    artifact["id"] = artifact_id
+    artifact["company"] = company
+    artifact["product"] = product
+    artifact["sources"] = sources
+    artifact["createdAt"] = _now()
+    with _lock:
+        _db().execute(
+            "INSERT INTO artifacts (id, kind, company, created_at, payload) VALUES (?, ?, ?, ?, ?)",
+            (artifact_id, kind, company, artifact["createdAt"], json.dumps(artifact)),
+        )
+        _db().commit()
+    return artifact
+
+
+@app.get("/api/artifacts")
+def list_artifacts() -> dict[str, Any]:
+    with _lock:
+        rows = _db().execute("SELECT id, kind, company, created_at, payload FROM artifacts ORDER BY created_at DESC").fetchall()
+    return {"artifacts": [_artifact_summary(row) for row in rows]}
+
+
+@app.get("/api/artifacts/{artifact_id}")
+def get_artifact(artifact_id: str) -> dict[str, Any]:
+    stored = _stored_payload("artifacts", artifact_id)
+    if stored is None:
+        raise HTTPException(404, "No such artifact.")
+    stored["id"] = artifact_id
+    return stored
 
 
 @app.delete("/api/documents/{document_id}", status_code=204)

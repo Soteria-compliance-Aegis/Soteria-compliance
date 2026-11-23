@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowLeft, ArrowUpRight, Download, FileText, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Bug, Download, FileText, Globe, RefreshCw, ShieldCheck, Trash2, Wrench } from 'lucide-react'
 
 import { AegisLogo } from '../components/Brand'
 import { Button, buttonClass } from '../components/Button'
@@ -8,7 +8,13 @@ import { Card } from '../components/Card'
 import { Badge, Chip, EmptyState, Notice } from '../components/Controls'
 import { Field, Input } from '../components/Field'
 import { Eyebrow } from '../components/Typography'
+import { BriefForm } from '../components/BriefForm'
 import { UploadPanel } from '../components/UploadPanel'
+import { ArtifactsPage } from './Artifacts'
+import { BriefReport } from './BriefReport'
+import { DiffReport } from './DiffReport'
+import { FootprintAudit } from './FootprintAudit'
+import { RedTeamLab, RedTeamReport } from './RedTeamLab'
 import {
   deleteDocument,
   fetchDocument,
@@ -246,13 +252,59 @@ function Overview() {
   return (
     <>
       <section className="pt-12 pb-8 sm:pt-16">
-        <Eyebrow tone="fire">Compliance workspace</Eyebrow>
+        <Eyebrow tone="fire">AI governance workspace</Eyebrow>
         <h1 className="display mt-3 max-w-[760px] text-balance text-[40px] sm:text-[54px]">Every claim needs evidence.</h1>
-        <p className="mt-4 max-w-[620px] text-pretty text-[17px] leading-[1.55] text-muted">
-          Upload a privacy policy, terms of service or AI disclosure. Aegis grades it against four US AI regulations and India&apos;s DPDP Act,
-          quoting the exact text behind every finding.
+        <p className="mt-4 max-w-[640px] text-pretty text-[17px] leading-[1.55] text-muted">
+          Audit the public footprint, red-team the agent, and generate the governance documents buyers ask for —
+          each finding quoted verbatim and mapped to a 2026–2027 US deadline. Technical readiness, not legal advice.
         </p>
       </section>
+
+      <div className="grid gap-2 md:grid-cols-3">
+        {[
+          {
+            step: '1',
+            title: 'Footprint & policy audit',
+            body: 'Fetch the live homepage and privacy policy, then grade every public promise against the disclosure behind it.',
+            href: '/audit',
+            icon: Globe,
+          },
+          {
+            step: '2',
+            title: 'Red-team lab',
+            body: 'Run eight bounded probes for AI disclosure, prompt injection, PII leakage and decision guardrails.',
+            href: '/redteam',
+            icon: Bug,
+          },
+          {
+            step: '3',
+            title: 'Fix artifacts & export',
+            body: 'Draft the disclosure notice, vendor checklist and buyer FAQ from the evidence, ready for counsel review.',
+            href: '/artifacts',
+            icon: Wrench,
+          },
+        ].map((flow) => (
+          <Link key={flow.href} href={flow.href} className="group block">
+            <Card tone="plain" className="h-full p-5 transition-colors group-hover:bg-surface-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-[12px] font-medium text-faint">
+                  <span className="grid size-6 place-items-center rounded-full bg-white/[0.07] text-[12px] text-soft">{flow.step}</span>
+                  Workflow {flow.step}
+                </span>
+                <flow.icon className="size-4 text-fire-2" aria-hidden />
+              </div>
+              <h2 className="mt-3 text-[15px] font-medium text-white group-hover:underline group-hover:decoration-white/30 group-hover:underline-offset-4">
+                {flow.title}
+              </h2>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-muted">{flow.body}</p>
+            </Card>
+          </Link>
+        ))}
+      </div>
+
+      <div className="mt-2">
+        <span className="text-[12px] text-faint">Existing flows · policy document audit and the one-page public footprint brief</span>
+      </div>
 
       {loadError ? (
         <Notice tone="error" title="The Aegis API is not answering" className="mb-3">
@@ -287,15 +339,15 @@ function Overview() {
             className="pointer-events-none absolute -top-32 left-1/2 h-64 w-[460px] -translate-x-1/2 rounded-full bg-fire-1/20 blur-[90px]"
           />
           <div className="relative mb-4 flex items-center justify-between gap-4">
-            <h2 className="text-[16px] font-medium text-white">New audit</h2>
-            <span className="text-[13px] text-faint">one document per audit</span>
+            <h2 className="text-[16px] font-medium text-white">New mini-audit</h2>
+            <span className="text-[13px] text-faint">homepage × privacy policy</span>
           </div>
           <div className="relative">
-            <UploadPanel onFile={upload} busy={busy} error={uploadError} />
+            <BriefForm onDone={(brief) => navigate(`/brief/${brief.id}`)} />
           </div>
-          <p className="relative mt-4 text-[13px] leading-relaxed text-faint">
-            Text is capped at {health ? health.maxChars.toLocaleString() : '15,500'} characters and sent to Groq in a single call. Findings are
-            graded Pass, Warning, Fail or N/A (Out of Scope) — an absence of wording is a gap, never a violation.
+          <p className="relative mt-5 text-[13px] leading-relaxed text-faint">
+            Both documents are capped before they reach Groq. The brief keeps only the three highest-confidence gaps and quotes the exact
+            text behind each one — missing disclosure is framed as an upcoming 2027 deadline, never as legal advice.
           </p>
         </Card>
 
@@ -316,6 +368,14 @@ function Overview() {
           </p>
         </Panel>
       </div>
+
+      <Card tone="plain" className="mt-2 p-5 sm:p-6">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-[16px] font-medium text-white">Upload a policy file</h2>
+          <span className="text-[13px] text-faint">existing document audit</span>
+        </div>
+        <UploadPanel onFile={upload} busy={busy} error={uploadError} />
+      </Card>
 
       <Panel
         className="mt-2"
@@ -741,17 +801,41 @@ function DocumentView({ id }: { id: string }) {
 
 const TABS = [
   { label: 'Overview', href: '/' },
+  { label: '1 · Footprint', href: '/audit' },
+  { label: '2 · Red-team', href: '/redteam' },
+  { label: '3 · Artifacts', href: '/artifacts' },
   { label: 'Documents', href: '/documents' },
 ]
 
-export function Workspace({ view }: { view: 'overview' | 'library' | 'document' }) {
+export type WorkspaceView =
+  | 'overview'
+  | 'library'
+  | 'document'
+  | 'brief'
+  | 'footprint'
+  | 'diff'
+  | 'redteam'
+  | 'redteamRun'
+  | 'artifacts'
+  | 'artifact'
+
+export function Workspace({ view }: { view: WorkspaceView }) {
   const { path } = useLocation()
   const id = path.split('/').filter(Boolean)[1] ?? ''
-  const active = view === 'library' || view === 'document' ? '/documents' : '/'
+  const active =
+    view === 'library' || view === 'document'
+      ? '/documents'
+      : view === 'footprint' || view === 'diff'
+        ? '/audit'
+        : view === 'redteam' || view === 'redteamRun'
+          ? '/redteam'
+          : view === 'artifacts' || view === 'artifact'
+            ? '/artifacts'
+            : '/'
 
   return (
-    <div className="min-h-screen bg-black">
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-black/75 backdrop-blur-xl">
+    <div className="app-shell min-h-screen bg-black">
+      <header className="no-print sticky top-0 z-40 border-b border-white/10 bg-black/75 backdrop-blur-xl">
         <div className="mx-auto flex h-[68px] max-w-[1280px] items-center justify-between gap-4 px-5 sm:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <Link href="/" aria-label="Aegis overview" className="rounded-[10px]">
@@ -766,7 +850,7 @@ export function Workspace({ view }: { view: 'overview' | 'library' | 'document' 
             </Badge>
           </div>
           <div className="flex items-center gap-1.5">
-            <nav aria-label="Workspace" className="hidden items-center gap-1 sm:flex">
+            <nav aria-label="Workspace" className="hidden items-center gap-1 lg:flex">
               {TABS.map((tab) => (
                 <Link
                   key={tab.href}
@@ -781,7 +865,7 @@ export function Workspace({ view }: { view: 'overview' | 'library' | 'document' 
                 </Link>
               ))}
             </nav>
-            <Link href="/" className={cx(buttonClass('primary', 'sm'), 'hidden sm:inline-flex')}>
+            <Link href="/audit" className={cx(buttonClass('primary', 'sm'), 'hidden sm:inline-flex')}>
               New audit
             </Link>
           </div>
@@ -789,13 +873,33 @@ export function Workspace({ view }: { view: 'overview' | 'library' | 'document' 
       </header>
 
       <main className="mx-auto max-w-[1280px] px-5 pb-20 sm:px-8">
-        {view === 'overview' ? <Overview /> : view === 'library' ? <Library /> : <DocumentView id={id} />}
+        {view === 'overview' ? (
+          <Overview />
+        ) : view === 'library' ? (
+          <Library />
+        ) : view === 'brief' ? (
+          <BriefReport id={id} />
+        ) : view === 'footprint' ? (
+          <FootprintAudit />
+        ) : view === 'diff' ? (
+          <DiffReport id={id} />
+        ) : view === 'redteam' ? (
+          <RedTeamLab />
+        ) : view === 'redteamRun' ? (
+          <RedTeamReport id={id} />
+        ) : view === 'artifacts' ? (
+          <ArtifactsPage />
+        ) : view === 'artifact' ? (
+          <ArtifactsPage artifactId={id} />
+        ) : (
+          <DocumentView id={id} />
+        )}
       </main>
 
-      <footer className="border-t border-white/10">
+      <footer className="no-print border-t border-white/10">
         <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3 px-5 py-6 text-[13px] text-faint sm:px-8">
           <span>Aegis · technical AI risk assessment, not legal advice.</span>
-          <span className="font-mono">CCPA · TRAIGA · LL144 · FTC §5 · DPDP</span>
+          <span className="font-mono">FTC §5 · CA ADMT · CO SB 26-189 · TRAIGA · LL144 · DPDP</span>
         </div>
       </footer>
     </div>

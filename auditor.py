@@ -17,6 +17,7 @@ from typing import Any
 from dotenv import load_dotenv
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq, RateLimitError
 
+from brief import BRIEF_MAX_OUTPUT_TOKENS, build_brief_prompt, normalize_brief
 from rules import NA_STATUS, REGULATIONS, REGULATION_IDS, Status, build_prompt
 
 MODEL = "openai/gpt-oss-120b"
@@ -425,6 +426,39 @@ def audit_document(
 
     findings = normalize_findings(parsed.get("findings") if isinstance(parsed, dict) else None)
     return _apply_evidence_rules(findings, document_text)
+
+
+def generate_brief(
+    company: str,
+    url: str,
+    homepage_copy: str,
+    privacy_policy: str,
+    *,
+    model: str = MODEL,
+    budget: TokenBudget | None = None,
+) -> dict[str, Any]:
+    """Compare homepage claims and the privacy policy into a 1-page brief."""
+    messages = build_brief_prompt(company, url, homepage_copy, privacy_policy)
+
+    budget = budget or shared_budget()
+    budget.acquire(
+        sum(estimate_tokens(message["content"]) for message in messages)
+        + BRIEF_MAX_OUTPUT_TOKENS
+    )
+
+    raw = _chat(messages, model=model, max_output_tokens=BRIEF_MAX_OUTPUT_TOKENS)
+    try:
+        parsed = _extract_json(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"[auditor] unparseable brief response: {exc}")
+        parsed = {}
+    return normalize_brief(
+        parsed if isinstance(parsed, dict) else {},
+        company=company,
+        url=url,
+        homepage_copy=homepage_copy,
+        privacy_policy=privacy_policy,
+    )
 
 
 PAGE_LABELS: dict[str, str] = {
