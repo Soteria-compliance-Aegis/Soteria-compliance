@@ -25,7 +25,7 @@ MODEL_FAST = "openai/gpt-oss-20b"
 
 # Free tier guardrail: stay strictly under 8,000 tokens per minute.
 TPM_LIMIT = 8_000
-# Five findings with verbatim quotes need room, and gpt-oss reasoning counts too.
+# Seven findings with verbatim quotes need room, and gpt-oss reasoning counts too.
 # Sized so the scraper's full document cap still fits 8,000 TPM together with
 # the screening pass; see tests/test_offline.py for the enforced arithmetic.
 DEFAULT_MAX_OUTPUT_TOKENS = 1_300
@@ -351,7 +351,13 @@ def _collapse(text: str) -> str:
 
 def quote_in_document(quote: str, document_text: str) -> bool:
     """True when ``quote`` really appears in the text that was sent."""
-    needle = _collapse(quote)
+    needle = _collapse(quote).strip()
+    # A trailing ellipsis only says the model stopped copying; the words it
+    # did show still have to match, so drop the marker and verify the rest.
+    for ellipsis in ("\u2026", "..."):
+        if needle.endswith(ellipsis):
+            needle = needle[: -len(ellipsis)].strip()
+            break
     if not needle:
         return False
     haystack = _collapse(document_text)

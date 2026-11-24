@@ -7,8 +7,8 @@ employment regulation from being graded against a consumer privacy notice.
 
 Only readable text is kept: navigation, footers, scripts, styles and other
 boilerplate are stripped, then the combined document is truncated at a word
-boundary under 15,500 characters (~3,900 tokens) so prompt + response stays
-inside the free-tier 8,000 TPM budget with five regulation rubrics.
+boundary under 12,000 characters (~3,000 tokens) so prompt + response stays
+inside the free-tier 8,000 TPM budget with seven regulation rubrics.
 """
 
 from __future__ import annotations
@@ -23,8 +23,9 @@ from bs4 import BeautifulSoup
 
 DEFAULT_TIMEOUT = 10
 # Combined document cap. Three pages plus their "=== SOURCE" tags must still fit
-# the 8,000 TPM budget together with the screening pass and the response.
-DEFAULT_MAX_CHARS = 15_500
+# the 8,000 TPM budget together with the seven-rubric prompt, the screening pass
+# and the response; the tests in tests/test_offline.py enforce the arithmetic.
+DEFAULT_MAX_CHARS = 12_000
 USER_AGENT = "AegisComplianceBot/0.1 (+AI compliance gap analysis prototype)"
 
 # Root-domain URLs probe these groups first; the first hit in a group wins.
@@ -51,9 +52,9 @@ SUBPAGE_TARGETS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 MAX_SECTIONS = len(SUBPAGE_TARGETS)
 
-# Per-page cap, so three pages still fit the 15,500-character document budget
-# together with the "=== SOURCE: ... ===" tags.
-SECTION_MAX_CHARS = 5_200
+# Per-page cap, so three pages (3 × 3,900) still fit the 12,000-character
+# document budget together with the "=== SOURCE: ... ===" tags.
+SECTION_MAX_CHARS = 3_900
 MIN_POLICY_CHARS = 300
 
 SECTION_LABELS: dict[str, str] = {

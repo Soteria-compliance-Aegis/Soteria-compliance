@@ -11,6 +11,8 @@ output/
 *.log
 
 # Local secrets and audit state
+input/
+outreach_batch/
 .env
 .env.*
 !.env.example

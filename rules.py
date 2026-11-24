@@ -110,6 +110,55 @@ REGULATIONS: dict[str, dict] = {
             "A right to human review of automated decisions, with how to request it.",
         ],
     },
+    "colorado_sb26_189": {
+        "name": "Colorado SB 26-189 (ADMT)",
+        "aliases": (
+            "colorado sb 26-189",
+            "colorado sb26-189",
+            "sb 26-189",
+            "sb26189",
+            "colorado ai act",
+            "colorado admt",
+            "co sb 26-189",
+        ),
+        "focus": (
+            "Developers and deployers of automated decision-making technology "
+            "(ADMT) for consequential decisions must give clear notice of the "
+            "ADMT's role, explain adverse outcomes in plain language, offer human "
+            "review, and hand deployers the documentation they need. Enacted May "
+            "14, 2026, replacing SB 24-205; consequential decisions made on or "
+            "after January 1, 2027 are covered."
+        ),
+        "scope": {
+            "applies_when": (
+                "The documents show ADMT used, built or sold for a consequential "
+                "decision about a person: employment, credit or financial "
+                "services, housing, insurance, healthcare, education, or access to "
+                "essential goods and services."
+            ),
+            "not_applicable_when": (
+                "The product only does analytics, generation, search, or "
+                "recommendation for the user's own content, with no automated "
+                "eligibility, scoring, ranking or approval of a person, or the "
+                "documents show no consequential-decision use at all."
+            ),
+            "evidence_pages": "privacy policy, AI disclosure, product terms",
+        },
+        "note": (
+            "SB 26-189 repealed and replaced SB 24-205: never cite SB 24-205 "
+            "impact-assessment duties as active requirements. Never assume an "
+            "employer's headcount or any statutory threshold — the small-deployer "
+            "(40 or fewer employees) carve-out is context only, not an "
+            "assumption. Obligations beginning January 1, 2027 are upcoming "
+            "readiness gaps against the rule text, not present violations."
+        ),
+        "checks": [
+            "Clear notice of the ADMT's role in a consequential decision, given before or at the point of interaction, naming the decision and the categories of data used.",
+            "A plain-language adverse-outcome explanation path (within 30 days) describing the role the ADMT played and how to request additional information.",
+            "An available human review or override workflow, with instructions on how a consumer exercises it.",
+            "Developer-to-deployer documentation for B2B AI vendors: intended use, known limitations, and evaluation and human-review guidance.",
+        ],
+    },
     "texas_traiga": {
         "name": "Texas TRAIGA",
         "aliases": ("traiga", "texas traiga act", "texas responsible ai"),
@@ -160,6 +209,51 @@ REGULATIONS: dict[str, dict] = {
             "Public summary of an annual independent bias audit for the AEDT.",
             "Impact ratios / selection rates by race, ethnicity, and sex category.",
             "Audit date, data window, and the tool(s) covered.",
+        ],
+    },
+    "illinois_hb3773": {
+        "name": "Illinois HB 3773 (AI in Employment)",
+        "aliases": (
+            "illinois hb 3773",
+            "illinois hb3773",
+            "hb 3773",
+            "public act 103-0804",
+            "illinois human rights act",
+            "illinois ai employment",
+        ),
+        "focus": (
+            "Employers using AI in employment decisions must notify employees "
+            "and applicants, must not use ZIP codes or other geographic proxies "
+            "for protected classes, and must be able to show the screening does "
+            "not produce a discriminatory effect. In force since January 1, 2026 "
+            "under the Illinois Human Rights Act."
+        ),
+        "scope": {
+            "applies_when": (
+                "The documents show AI used for recruitment, hiring, promotion, "
+                "renewal, selection for training or apprenticeship, tenure, "
+                "discharge, discipline, or terms and privileges of employment — "
+                "including a vendor selling such a tool to employers."
+            ),
+            "not_applicable_when": (
+                "There is no employment or candidate-screening context, or the "
+                "company's AI does not screen, score, rank or otherwise inform an "
+                "employment decision. A consumer privacy notice alone is not "
+                "evidence of employment AI use."
+            ),
+            "evidence_pages": "careers/hiring page, privacy policy, AI disclosure",
+        },
+        "note": (
+            "The statute tests discriminatory effect; it does not require an NYC "
+            "LL144-style annual public bias audit, so never demand one as if it "
+            "were mandatory. The IDHR withdrew its draft implementing rules in "
+            "June 2026: check statutory notice and proxy/fairness alignment and "
+            "do not treat withdrawn draft rules as binding regulations."
+        ),
+        "checks": [
+            "Notice to employees and applicants that AI is used in recruitment, hiring, promotion, renewal, training or apprenticeship selection, tenure, discharge, discipline, or terms and privileges of employment.",
+            "No use of ZIP codes or other geographic proxies for protected classes in AI scoring or screening, with a stated practice rather than silence.",
+            "Discriminatory-effect / fairness governance readiness: testing, review, or vendor assurances that the tool does not disadvantage protected classes (a formal public bias audit is not required).",
         ],
     },
     "ftc_section5": {

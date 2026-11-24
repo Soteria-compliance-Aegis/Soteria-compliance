@@ -143,6 +143,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_stem(name: str) -> str:
+    """Reduce an uploaded filename to an ASCII, header-safe download stem.
+
+    A quote, newline or non-Latin-1 character in the original name would
+    otherwise corrupt or split the Content-Disposition header.
+    """
+    stem = _INVALID_FILENAME_CHARS.sub("-", Path(name).stem).strip("-._")
+    return (stem or "report")[:80]
+
+
 def _row(document_id: str) -> sqlite3.Row | None:
     with _lock:
         return _db().execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
@@ -875,7 +888,7 @@ def download_report(document_id: str, kind: str = "full") -> PlainTextResponse:
         if kind == "full"
         else reporter.render_teaser_report(findings, row["source"])
     )
-    stem = Path(row["name"]).stem
+    stem = _safe_stem(row["name"])
     return PlainTextResponse(
         body,
         media_type="text/markdown; charset=utf-8",

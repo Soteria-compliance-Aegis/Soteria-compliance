@@ -461,10 +461,20 @@ def _status(value: Any) -> str:
 
 
 def _selected(probe_ids: list[str] | None) -> list[dict[str, Any]]:
+    """Resolve requested probe ids, refusing unknown ones.
+
+    Silently falling back to the full suite billed a caller for eight probes
+    when they asked for an id that does not exist, so an all-unknown request
+    is a validation error instead.
+    """
     if not probe_ids:
         return list(PROBES)
     chosen = [PROBE_BY_ID[probe_id] for probe_id in probe_ids if probe_id in PROBE_BY_ID]
-    return chosen or list(PROBES)
+    if not chosen:
+        raise ValueError(
+            "None of those probe ids exist. Choose from: " + ", ".join(PROBE_BY_ID) + "."
+        )
+    return chosen
 
 
 def _probe_context(probe: dict[str, Any]) -> str:
