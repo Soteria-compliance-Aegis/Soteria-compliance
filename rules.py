@@ -20,76 +20,201 @@ Severity = Literal["High", "Medium", "Low", "None"]
 NA_STATUS: Status = "N/A (Out of Scope)"
 OPEN_STATUSES: tuple[str, ...] = ("Fail", "Warning")
 
-SYSTEM_PROMPT = """You are a technical AI compliance auditor reviewing a startup's
-public documents. You are not a lawyer and you do not give legal advice.
+# Short citations used in the prompt and in fallback copy, so every finding
+# names its rubric the way a buyer's reviewer does.
+SHORT_LABELS: dict[str, str] = {
+    "ftc_section5": "FTC §5",
+    "ccpa_admt": "CA ADMT",
+    "colorado_sb26_189": "CO SB 26-189",
+    "texas_traiga": "Texas TRAIGA",
+    "nyc_ll144": "NYC LL144",
+    "illinois_hb3773": "Illinois HB 3773",
+    "india_dpdp": "India DPDP",
+}
 
-The document you receive is one or more web pages, each tagged
-"=== SOURCE: <page type> — <url> ===". Attribute every judgement to the page
-type it came from: hiring/AEDT evidence lives in a careers or hiring page, AI
-testing and security evidence in an AI, security or trust page, and automated
-decision-making notices in the privacy policy or AI page.
+# Dated exposure is copied into the prompt and into fallback copy, so a finding
+# never ships a vague "a regulator may care" line. Dates match the rubrics above.
+ENFORCEMENT_EXPOSURE: dict[str, str] = {
+    "ftc_section5": "FTC Section 5 is enforced today",
+    "texas_traiga": "Texas TRAIGA is in force with active enforcement",
+    "illinois_hb3773": "Illinois HB 3773 is in force from January 1, 2026",
+    "nyc_ll144": "NYC Local Law 144 is in force since July 2023",
+    "ccpa_admt": "California ADMT obligations begin January 1, 2027",
+    "colorado_sb26_189": "Colorado SB 26-189 obligations begin January 1, 2027",
+    "india_dpdp": "India DPDP Data Fiduciary duties are enforced from May 13, 2027",
+}
 
-APPLICABILITY PRE-CHECK — do this before grading anything:
-For each regulation decide whether it plausibly applies to this company on the
-evidence in these documents. If the scope conditions are not met, grade
-"N/A (Out of Scope)". Do not manufacture a violation from a document that is
-not about that activity, and do not Fail a regulation because a disclosure is
-missing from a page type that could never contain it.
+# Kept terse on purpose: this text is sent on every audit, and the free tier's
+# 8,000 TPM window already carries a 12,000-character document.
+REMEDIATION_CONTRACT = """
+FIVE-PART REMEDIATION — for every Fail and Warning add one entry to the
+top-level "remediation" array, keyed by the same regulation id:
+- problem: the exact claim-vs-policy mismatch or failure, citing the rubric short
+  label and severity (<= 20 words).
+- rootCause: why the gap happened operationally (<= 15 words).
+- consequences: how an enterprise buyer's procurement or legal review stalls or
+  rejects the deal, plus the dated exposure below (<= 30 words).
+- exactFix.copyRedline: exact replacement wording for the public claim, ready to
+  paste. exactFix.policyOrControlPatch: exact policy addendum or product
+  guardrail, ready to paste (<= 40 words each).
+- prevention: one repeatable release check, logging rule or claim-diff cadence
+  (<= 15 words).
+DATED EXPOSURE: FTC §5 enforced today; Texas TRAIGA active enforcement; Illinois
+HB 3773 from January 1, 2026; CA ADMT/CCPA and Colorado SB 26-189 from January 1,
+2027; India DPDP Data Fiduciary enforcement from May 13, 2027.
+"""
+
+
+def _clip(value: object, limit: int) -> str:
+    """Collapse whitespace, drop empty markers, and cap the length."""
+    text = " ".join(str(value or "").split())
+    if len(text) >= 2 and text[0] in "\"'" and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if text.lower() in ("", "n/a", "none", "null", "not found", "-"):
+        return ""
+    return text[:limit].rstrip()
+
+
+def normalize_remediation(
+    raw: object,
+    *,
+    regulation_id: str = "",
+    severity: str = "",
+    status: str = "Warning",
+    evidence: str = "",
+    note: str = "",
+) -> dict:
+    """Return the five-part remediation block, blank for a clean finding.
+
+    The model is asked for this structure, but a missing or partial answer still
+    has to produce a complete, honest block: the fallbacks name the rubric, the
+    dated exposure and a repeatable guardrail instead of shipping empty labels.
+    """
+    blank: dict = {
+        "problem": "",
+        "rootCause": "",
+        "consequences": "",
+        "exactFix": {"copyRedline": "", "policyOrControlPatch": ""},
+        "prevention": "",
+    }
+    if status not in OPEN_STATUSES:
+        return blank
+
+    source = raw if isinstance(raw, dict) else {}
+    fix = source.get("exactFix") if isinstance(source.get("exactFix"), dict) else {}
+    label = SHORT_LABELS.get(regulation_id) or _clip(source.get("regulation"), 60)
+    severity = severity or "Medium"
+    prefix = f"{label} ({severity}): " if label else f"{severity} finding: "
+    exposure = ENFORCEMENT_EXPOSURE.get(regulation_id, "the next buyer security review")
+
+    problem = _clip(source.get("problem"), 300)
+    if not problem and evidence:
+        snippet = evidence[:160].rstrip().rstrip(".")
+        problem = f'{prefix}the quoted text does not meet this rubric — "{snippet}".'
+    if not problem:
+        problem = (
+            f"{prefix}the reviewed text does not support the claim or "
+            "disclosure this rubric requires."
+        )
+
+    return {
+        "problem": problem,
+        "rootCause": _clip(source.get("rootCause"), 240)
+        or "The public claim, product behaviour and privacy disclosure are owned by different teams and are not updated in the same release.",
+        "consequences": _clip(source.get("consequences"), 340)
+        or f"Procurement or legal review will hold the deal until this is closed; {exposure}.",
+        "exactFix": {
+            "copyRedline": _clip(fix.get("copyRedline"), 360)
+            or "Remove the claim or qualify it with the exact capability, its test date and the evidence behind it.",
+            "policyOrControlPatch": _clip(fix.get("policyOrControlPatch"), 480)
+            or note
+            or "Add the matching disclosure to the privacy policy and to the product surface where the decision is made.",
+        },
+        "prevention": _clip(source.get("prevention"), 240)
+        or "Add this rubric to the release checklist and diff claims against the policy every quarter.",
+    }
+
+
+SYSTEM_PROMPT = (
+    """You are a technical AI compliance auditor reviewing a startup's public
+documents. You are not a lawyer and you do not give legal advice.
+
+The document is one or more web pages tagged "=== SOURCE: <page type> — <url> ===".
+Attribute every judgement to the page type it came from: hiring/AEDT evidence
+lives in a careers or hiring page, AI testing and security evidence in an AI,
+security or trust page, and automated decision-making notices in the privacy
+policy or AI page.
+
+APPLICABILITY PRE-CHECK — before grading anything:
+For each regulation decide whether it plausibly applies on this evidence. If the
+scope conditions are not met, grade "N/A (Out of Scope)". Do not manufacture a
+violation from a document that is not about that activity, and do not Fail a
+regulation because a disclosure is missing from a page type that could never
+contain it.
 
 Status values:
 - Pass: the required disclosure/practice is clearly present.
 - Warning: in scope, but the disclosure is partial, vague, or absent while the
   document contains no problematic text of its own.
-- Fail: in scope AND the document contains text that is itself the problem —
-  an unsupported or absolute claim, a practice that contradicts the law, a
-  prohibited use, or a use disclosed without the required notice. Never use
+- Fail: in scope AND the text is itself the problem — an unsupported or absolute
+  claim, a practice that contradicts the law, a prohibited use, or a use
+  disclosed without the required notice. Never use
   Fail for a simple absence of language.
 - N/A (Out of Scope): the regulation does not apply to this company or to the
   activities these documents describe.
 
-Severity values (impact if left unfixed), "None" for out of scope:
-- High: an outright prohibited practice or unsubstantiated claim creating
-  direct legal exposure (e.g. "100% unbiased", "HIPAA compliant").
-- Medium: an incomplete or vague disclosure a regulator would likely question.
-- Low: a minor gap or wording risk.
+Severity (impact if unfixed; "None" for out of scope): High = prohibited practice
+or unsubstantiated claim ("100% unbiased", "HIPAA compliant"); Medium = incomplete
+or vague disclosure; Low = minor gap or wording risk.
 
 Evidence rules:
-- evidence_quote must be copied character-for-character from the document.
-- For Fail, the quote MUST be the problematic text itself. If you cannot point
-  at such a sentence, the finding is a Warning, not a Fail.
-- Never quote the nearest unrelated sentence, and never quote a page's general
-  scope statement as if it were the violation.
-- For Warning, quote only a sentence that shows the ambiguity; if the document
+- evidence_quote is copied character-for-character from the document.
+- For Fail the quote MUST be the problematic text itself. If you cannot point at
+  such a sentence, grade Warning.
+- Never quote an unrelated sentence, and never quote a page's scope statement as
+  if it were the violation.
+- For Warning quote only a sentence that shows the ambiguity; if the document
   says nothing on the topic, return "".
 - For N/A (Out of Scope) and Pass, return "" (or the enabling sentence for a
   Pass). Never invent text.
-- remediation_note must be one concrete, actionable change; for N/A say what
-  would bring the company into scope.
-
-Return ONLY a JSON object shaped exactly like this, with exactly one item in
-"findings" for every regulation id listed in the user message and no other
-keys:
+- remediation_note is the one-line change; for N/A say what brings the company
+  into scope.
+"""
+    + REMEDIATION_CONTRACT
+    + """
+Return ONLY this JSON object, with exactly one item in "findings" for every
+regulation id in the user message and one remediation entry per open finding:
 {
   "findings": [
     {
       "regulation": "ccpa_admt",
       "status": "Pass" | "Warning" | "Fail" | "N/A (Out of Scope)",
       "severity": "High" | "Medium" | "Low" | "None",
-      "evidence_quote": "verbatim text from the document, or \\"\\"",
-      "remediation_note": "one concrete change"
+      "evidence_quote": "verbatim text, or \\"\\"",
+      "remediation_note": "one-line change"
+    }
+  ],
+  "remediation": [
+    {
+      "regulation": "ccpa_admt",
+      "problem": "...",
+      "rootCause": "...",
+      "consequences": "...",
+      "exactFix": {"copyRedline": "...", "policyOrControlPatch": "..."},
+      "prevention": "..."
     }
   ]
 }
 """
+)
 
 REGULATIONS: dict[str, dict] = {
     "ccpa_admt": {
         "name": "California ADMT / CCPA",
         "aliases": ("ccpa", "admt", "california admt", "cpra"),
         "focus": (
-            "Automated decision-making technology (ADMT) used for significant "
-            "decisions must have pre-use notice, opt-out rights, and access to "
-            "human review."
+            "ADMT used for significant decisions needs pre-use notice, opt-out "
+            "rights and human review."
         ),
         "scope": {
             "applies_when": (
@@ -122,12 +247,10 @@ REGULATIONS: dict[str, dict] = {
             "co sb 26-189",
         ),
         "focus": (
-            "Developers and deployers of automated decision-making technology "
-            "(ADMT) for consequential decisions must give clear notice of the "
-            "ADMT's role, explain adverse outcomes in plain language, offer human "
-            "review, and hand deployers the documentation they need. Enacted May "
-            "14, 2026, replacing SB 24-205; consequential decisions made on or "
-            "after January 1, 2027 are covered."
+            "ADMT for consequential decisions needs notice, adverse-outcome "
+            "explanation, human review and deployer documentation. Enacted May "
+            "14, 2026, replacing SB 24-205; decisions on or after January 1, 2027 "
+            "are covered."
         ),
         "scope": {
             "applies_when": (
@@ -163,9 +286,8 @@ REGULATIONS: dict[str, dict] = {
         "name": "Texas TRAIGA",
         "aliases": ("traiga", "texas traiga act", "texas responsible ai"),
         "focus": (
-            "Developers and deployers of AI systems must show reasonable care "
-            "through bias and security testing aligned with recognized "
-            "frameworks such as the NIST AI Risk Management Framework."
+            "Developers and deployers must show reasonable care through bias and "
+            "security testing aligned to recognized frameworks such as NIST AI RMF."
         ),
         "scope": {
             "applies_when": (
@@ -189,8 +311,8 @@ REGULATIONS: dict[str, dict] = {
         "name": "NYC Local Law 144",
         "aliases": ("ll144", "ll 144", "local law 144", "aedt", "bias audit"),
         "focus": (
-            "Employers and employment agencies using automated employment "
-            "decision tools (AEDTs) must publish an annual bias audit summary."
+            "Employers and employment agencies using AEDTs must publish an annual "
+            "bias audit summary."
         ),
         "scope": {
             "applies_when": (
@@ -222,11 +344,9 @@ REGULATIONS: dict[str, dict] = {
             "illinois ai employment",
         ),
         "focus": (
-            "Employers using AI in employment decisions must notify employees "
-            "and applicants, must not use ZIP codes or other geographic proxies "
-            "for protected classes, and must be able to show the screening does "
-            "not produce a discriminatory effect. In force since January 1, 2026 "
-            "under the Illinois Human Rights Act."
+            "AI in employment decisions needs notice, no ZIP-code proxies for "
+            "protected classes, and discriminatory-effect readiness. In force "
+            "since January 1, 2026 under the Illinois Human Rights Act."
         ),
         "scope": {
             "applies_when": (
@@ -260,9 +380,8 @@ REGULATIONS: dict[str, dict] = {
         "name": "FTC Section 5 (AI-Washing)",
         "aliases": ("ftc", "section 5", "ai-washing", "ai washing"),
         "focus": (
-            "AI capability, safety, and compliance claims must be substantiated, "
-            "and training on customer data via third-party LLM APIs must be "
-            "disclosed."
+            "AI capability, safety and compliance claims must be substantiated, "
+            "and training on customer data through third-party LLM APIs disclosed."
         ),
         "scope": {
             "applies_when": (
@@ -285,10 +404,9 @@ REGULATIONS: dict[str, dict] = {
         "name": "India DPDP Act",
         "aliases": ("dpdp", "dpdp act", "india dpdp", "digital personal data protection"),
         "focus": (
-            "Processing the digital personal data of Data Principals in India "
-            "requires an itemised, plain-language notice with the exact purpose "
-            "of processing, a free and specific consent, a published grievance "
-            "contact, and limits on how long data is kept."
+            "Processing Data Principals' digital personal data in India requires "
+            "an itemised plain-language notice, free specific consent, a published "
+            "grievance contact and retention limits."
         ),
         "scope": {
             "applies_when": (

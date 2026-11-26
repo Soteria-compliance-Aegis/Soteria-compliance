@@ -5,10 +5,10 @@ import { cx } from '../lib/cx'
 import { Link } from '../lib/router'
 
 /*
-  Buttons are pills. `primary` is solid white (the one action per view),
-  `secondary` is frosted glass, `ghost` is bare text. Pass `href` for a link
-  that looks like a button. `data-force="hover|focus|pressed"` pins a state
-  for the style guide.
+  Buttons are pills. `primary` is the brass seal (the one action per view),
+  `secondary` is a hairline over the ink ground, `ghost` is bare text. Pass
+  `href` for a link that looks like a button. `data-force="hover|focus|pressed"`
+  pins a state for the style guide.
 */
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost'
@@ -19,10 +19,11 @@ const base =
   'relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-control font-medium transition-[background-color,color,box-shadow,transform] duration-200 ease-out focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-plasma-text data-[force=focus]:outline-2 data-[force=focus]:outline-offset-3 data-[force=focus]:outline-plasma-text active:scale-[0.97] data-[force=pressed]:scale-[0.97] disabled:pointer-events-none disabled:opacity-45 aria-disabled:pointer-events-none aria-disabled:opacity-45'
 
 const variants: Record<ButtonVariant, string> = {
-  primary: 'bg-white text-black hover:bg-ice data-[force=hover]:bg-ice data-[force=pressed]:bg-sky active:bg-sky',
+  primary:
+    'bg-ice text-[#0b0c10] hover:bg-white data-[force=hover]:bg-white data-[force=pressed]:bg-soft active:bg-soft',
   secondary:
-    'bg-white/[0.08] text-white ring-1 ring-inset ring-white/15 backdrop-blur-md hover:bg-white/[0.14] data-[force=hover]:bg-white/[0.14] active:bg-white/[0.18] data-[force=pressed]:bg-white/[0.18]',
-  ghost: 'text-soft hover:bg-white/[0.07] hover:text-white data-[force=hover]:bg-white/[0.07] data-[force=hover]:text-white active:bg-white/[0.1] data-[force=pressed]:bg-white/[0.1]',
+    'text-fg ring-1 ring-inset ring-line-strong hover:border-plasma-text hover:bg-white/[0.05] hover:ring-plasma-text/60 data-[force=hover]:bg-white/[0.05] data-[force=hover]:ring-plasma-text/60 active:bg-white/[0.08] data-[force=pressed]:bg-white/[0.08]',
+  ghost: 'text-soft hover:bg-white/[0.05] hover:text-fg data-[force=hover]:bg-white/[0.05] data-[force=hover]:text-fg active:bg-white/[0.08] data-[force=pressed]:bg-white/[0.08]',
 }
 
 const sizes: Record<ButtonSize, string> = {
@@ -117,7 +118,7 @@ export function IconButton({
       type="button"
       data-force={force}
       className={cx(
-        'grid size-11 shrink-0 place-items-center rounded-[14px] bg-white/[0.07] text-white transition-colors hover:bg-white/[0.12] active:scale-95 data-[force=hover]:bg-white/[0.12] data-[force=focus]:outline-2 data-[force=focus]:outline-offset-3 data-[force=focus]:outline-plasma-text data-[force=pressed]:scale-95',
+        'grid size-11 shrink-0 place-items-center rounded-[12px] text-soft ring-1 ring-inset ring-line transition-colors hover:bg-white/[0.06] hover:text-fg active:scale-95 data-[force=hover]:bg-white/[0.06] data-[force=focus]:outline-2 data-[force=focus]:outline-offset-3 data-[force=focus]:outline-plasma-text data-[force=pressed]:scale-95',
         className,
       )}
       {...rest}

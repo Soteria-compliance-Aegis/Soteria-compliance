@@ -33,12 +33,13 @@ from fastapi.staticfiles import StaticFiles
 
 import artifacts
 import auditor
+import console
 import diff_engine
 import fetcher
 import redteam
 import reporter
 from rules import NA_STATUS, OPEN_STATUSES, REGULATIONS
-from scraper import DEFAULT_MAX_CHARS, Section, format_sections, kind_for_path, truncate
+from scraper import DEFAULT_MAX_CHARS, Section, format_sections_report, kind_for_path
 
 load_dotenv()
 
@@ -118,7 +119,14 @@ CREATE TABLE IF NOT EXISTS documents (
     error TEXT,
     source TEXT NOT NULL,
     text TEXT NOT NULL,
+    clause_report TEXT,
     findings TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 )
 """
 
@@ -135,6 +143,11 @@ def _db() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.executescript(_SCHEMA)
+        # Databases created before clause selection existed gain the column
+        # here; old rows keep NULL and the UI simply omits the indicator.
+        columns = {row[1] for row in _conn.execute("PRAGMA table_info(documents)")}
+        if "clause_report" not in columns:
+            _conn.execute("ALTER TABLE documents ADD COLUMN clause_report TEXT")
         _conn.commit()
     return _conn
 
@@ -229,11 +242,24 @@ def _summary(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _clause_report(row: sqlite3.Row) -> dict[str, Any] | None:
+    """What the character cap kept for this document, when it was recorded."""
+    raw = row["clause_report"] if "clause_report" in row.keys() else None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _detail(row: sqlite3.Row) -> dict[str, Any]:
     payload = _summary(row)
     findings = _findings(row)
     payload["findings"] = findings
     payload["source"] = row["source"]
+    payload["clauseReport"] = _clause_report(row)
     if findings:
         payload["reports"] = {
             "full": reporter.render_full_report(findings, row["source"]),
@@ -308,10 +334,15 @@ def extract_text(name: str, data: bytes) -> str:
     return text
 
 
-def _document_text(name: str, text: str) -> str:
-    """Tag the upload the way the scraper tags a page, so scope reading works."""
-    section = Section(kind_for_path(name), name, truncate(text, DEFAULT_MAX_CHARS))
-    return format_sections([section], max_chars=DEFAULT_MAX_CHARS)
+def _document_text(name: str, text: str) -> tuple[str, dict[str, Any]]:
+    """Tag the upload the way the scraper tags a page, so scope reading works.
+
+    Returns the text the auditor receives plus what the 10,000-character cap
+    kept, so the audit UI can show whether high-signal clauses were prioritised.
+    """
+    section = Section(kind_for_path(name), name, text)
+    document_text, selection = format_sections_report([section], max_chars=DEFAULT_MAX_CHARS)
+    return document_text, selection.public()
 
 
 # --------------------------------------------------------------------------- #
@@ -347,8 +378,8 @@ app = FastAPI(title="Aegis", docs_url="/api/docs", openapi_url="/api/openapi.jso
 def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "model": auditor.MODEL,
-        "screeningModel": auditor.MODEL_FAST,
+        "model": auditor.active_models()["deep"],
+        "screeningModel": auditor.active_models()["fast"],
         "keyConfigured": bool(os.getenv("GROQ_API_KEY")),
         "maxChars": DEFAULT_MAX_CHARS,
         "maxUploadBytes": MAX_UPLOAD_BYTES,
@@ -368,6 +399,174 @@ def health() -> dict[str, Any]:
             "maxProbeResponseBytes": redteam.MAX_RESPONSE_BYTES,
         },
     }
+
+
+# --------------------------------------------------------------------------- #
+# Dev console: model routing and the tool bench
+# --------------------------------------------------------------------------- #
+
+
+def _model_settings() -> dict[str, str]:
+    """The models this process routes to, falling back to shipped defaults."""
+    defaults = {"deep": auditor.MODEL, "fast": auditor.MODEL_FAST}
+    with _lock:
+        rows = _db().execute("SELECT key, value FROM settings WHERE key LIKE 'model.%'").fetchall()
+    saved = {row["key"].split(".", 1)[1]: row["value"] for row in rows}
+    return {role: saved.get(role) or model for role, model in defaults.items()}
+
+
+def _save_models(deep: str, fast: str) -> None:
+    now = _now()
+    with _lock:
+        for role, model in (("deep", deep), ("fast", fast)):
+            _db().execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (f"model.{role}", model, now),
+            )
+        _db().commit()
+
+
+def _restore_models() -> None:
+    """Reapply the previous session's choice before anything can run."""
+    try:
+        saved = _model_settings()
+    except sqlite3.Error as exc:  # a locked or unreadable file must not stop the API
+        print(f"[server] could not read the saved model choice: {exc}")
+        return
+    auditor.configure_models(deep=saved["deep"], fast=saved["fast"])
+
+
+def _table_stats(table: str) -> dict[str, Any]:
+    if table not in console.TABLE_NAMES:
+        raise ValueError(f"Unknown console table {table!r}")
+    with _lock:
+        row = _db().execute(f"SELECT COUNT(*) AS records, MAX(created_at) AS latest FROM {table}").fetchone()
+    return {"count": row["records"], "latest": row["latest"]}
+
+
+def _activity(limit: int = 12) -> list[dict[str, Any]]:
+    """Every stored run, newest first, in the shape the ledger renders."""
+
+    def stored(raw: str | None) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw or "")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    items: list[dict[str, Any]] = []
+    with _lock:
+        db = _db()
+        for row in db.execute("SELECT id, name, status, created_at FROM documents").fetchall():
+            items.append(
+                {
+                    "id": row["id"],
+                    "kind": "Policy audit",
+                    "title": row["name"],
+                    "detail": row["status"],
+                    "createdAt": row["created_at"],
+                    "href": f"/documents/{row['id']}",
+                }
+            )
+        for row in db.execute("SELECT id, company, created_at, payload FROM briefs").fetchall():
+            gaps = stored(row["payload"]).get("gaps") or []
+            items.append(
+                {
+                    "id": row["id"],
+                    "kind": "Mini-audit",
+                    "title": row["company"],
+                    "detail": f"{len(gaps)} gaps",
+                    "createdAt": row["created_at"],
+                    "href": f"/brief/{row['id']}",
+                }
+            )
+        for row in db.execute("SELECT id, company, created_at, payload FROM diffs").fetchall():
+            counts = stored(row["payload"]).get("counts") or {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "kind": "Footprint audit",
+                    "title": row["company"],
+                    "detail": f"{counts.get('critical', 0)} critical, {counts.get('high', 0)} high",
+                    "createdAt": row["created_at"],
+                    "href": f"/diff/{row['id']}",
+                }
+            )
+        for row in db.execute("SELECT id, company, mode, created_at, payload FROM redteam_runs").fetchall():
+            counts = stored(row["payload"]).get("counts") or {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "kind": "Red team",
+                    "title": row["company"],
+                    "detail": f"{row['mode']}, {counts.get('fail', 0)} of {counts.get('total', 0)} failed",
+                    "createdAt": row["created_at"],
+                    "href": f"/redteam/{row['id']}",
+                }
+            )
+        for row in db.execute("SELECT id, company, kind, created_at, payload FROM artifacts").fetchall():
+            items.append(
+                {
+                    "id": row["id"],
+                    "kind": "Fix artifact",
+                    "title": row["company"],
+                    "detail": stored(row["payload"]).get("title") or row["kind"],
+                    "createdAt": row["created_at"],
+                    "href": f"/artifacts/{row['id']}",
+                }
+            )
+    items.sort(key=lambda item: str(item["createdAt"] or ""), reverse=True)
+    return items[:limit]
+
+
+def _console_payload() -> dict[str, Any]:
+    models = _model_settings()
+    return {
+        "models": {
+            "deep": models["deep"],
+            "fast": models["fast"],
+            "defaults": {"deep": auditor.MODEL, "fast": auditor.MODEL_FAST},
+            "budgetTpm": auditor.TPM_LIMIT,
+            "catalog": console.model_catalog(),
+        },
+        "budget": auditor.shared_budget().snapshot(),
+        "keyConfigured": bool(os.getenv("GROQ_API_KEY")),
+        "tools": [{**tool, "records": _table_stats(tool["table"])} for tool in console.TOOLS],
+        "activity": _activity(),
+        "limits": {
+            "maxChars": DEFAULT_MAX_CHARS,
+            "maxUploadBytes": MAX_UPLOAD_BYTES,
+            "redteamProbes": len(redteam.PROBES),
+            "rubrics": len(REGULATIONS),
+            "artifactKinds": len(artifacts.KINDS),
+            "fetchTimeoutSeconds": int(fetcher.DEFAULT_TIMEOUT),
+        },
+        "checkedAt": _now(),
+    }
+
+
+_restore_models()
+
+
+@app.get("/api/console")
+def console_overview() -> dict[str, Any]:
+    return _console_payload()
+
+
+@app.put("/api/console/models")
+def update_models(payload: dict[str, Any]) -> dict[str, Any]:
+    """Switch the model every later engine call routes to, and remember it."""
+    current = _model_settings()
+    try:
+        # A missing channel keeps its current model; an empty one is a client bug.
+        deep = console.validate_model_id(payload.get("deep", current["deep"]))
+        fast = console.validate_model_id(payload.get("fast", current["fast"]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _save_models(deep, fast)
+    auditor.configure_models(deep=deep, fast=fast)
+    return _console_payload()
 
 
 @app.get("/api/documents")
@@ -407,13 +606,13 @@ async def upload_document(background: BackgroundTasks, file: UploadFile = File(.
         raise HTTPException(413, "Files must be 10 MB or smaller.")
 
     text = extract_text(name, data)
-    document_text = _document_text(name, text)
+    document_text, clause_report = _document_text(name, text)
     document_id = uuid.uuid4().hex[:12]
     source = f"{name} (upload)"
     with _lock:
         _db().execute(
-            "INSERT INTO documents (id, name, file_type, size_bytes, chars, created_at, status, source, text)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO documents (id, name, file_type, size_bytes, chars, created_at, status, source, text, clause_report)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 document_id,
                 name,
@@ -424,6 +623,7 @@ async def upload_document(background: BackgroundTasks, file: UploadFile = File(.
                 "queued",
                 source,
                 document_text,
+                json.dumps(clause_report),
             ),
         )
         _db().commit()

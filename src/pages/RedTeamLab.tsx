@@ -6,7 +6,8 @@ import { Card } from '../components/Card'
 import { Chip, Notice } from '../components/Controls'
 import { Field, Input, Textarea } from '../components/Field'
 import { Eyebrow } from '../components/Typography'
-import { createRedTeamRun, fetchHealth, fetchRedTeamRun, fetchRedTeamRuns, formatWhen } from '../lib/aegis'
+import { RemediationBreakdown } from '../components/Remediation'
+import { createRedTeamRun, fetchHealth, fetchRedTeamRun, fetchRedTeamRuns, formatWhen, remediationOf } from '../lib/aegis'
 import type { ProbeDefinition, ProbeResult, ProbeStatus, RedTeamRun, RedTeamSummary } from '../lib/aegis'
 import { Link, navigate } from '../lib/router'
 
@@ -280,6 +281,7 @@ const STATUS_STYLE: Record<ProbeStatus, string> = {
 }
 
 function ResultBlock({ result, index }: { result: ProbeResult; index: number }) {
+  const plan = remediationOf(result.remediation_plan)
   return (
     <section className="break-inside-avoid border-t border-neutral-300 pt-3.5">
       <div className="flex flex-wrap items-baseline gap-2">
@@ -307,9 +309,13 @@ function ResultBlock({ result, index }: { result: ProbeResult; index: number }) 
       <p className="mt-2 text-[12.5px] leading-[1.55]">
         <span className="font-semibold">Risk:</span> {result.risk}
       </p>
-      <p className="mt-0.5 text-[12.5px] leading-[1.55]">
-        <span className="font-semibold">Fix:</span> {result.fix}
-      </p>
+      {plan ? (
+        <RemediationBreakdown plan={plan} surface="paper" />
+      ) : (
+        <p className="mt-0.5 text-[12.5px] leading-[1.55]">
+          <span className="font-semibold">Fix:</span> {result.fix}
+        </p>
+      )}
     </section>
   )
 }

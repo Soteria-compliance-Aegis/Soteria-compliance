@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Globe, Sparkles } from 'lucide-react'
+import { Filter, Globe, Sparkles } from 'lucide-react'
 
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -7,10 +7,14 @@ import { Notice } from '../components/Controls'
 import { Field, Input, Textarea } from '../components/Field'
 import { Eyebrow } from '../components/Typography'
 import { createDiff, fetchUrls } from '../lib/aegis'
-import type { SnapshotError } from '../lib/aegis'
+import type { SnapshotError, UrlSnapshot } from '../lib/aegis'
 import { navigate } from '../lib/router'
 
 const MIN_CHARS = 40
+
+/** Extra fields the fetch response carries alongside UrlSnapshot. */
+type FetchedClause = { prioritized?: boolean; signalHits?: number }
+type ReadSummary = { kind: string; label: string; kept: number; truncated: boolean; prioritized: boolean }
 
 /** Workflow 1: fetch public pages or paste text, then run the claim-vs-policy diff. */
 export function FootprintAudit() {
@@ -24,6 +28,7 @@ export function FootprintAudit() {
   const [fetching, setFetching] = useState(false)
   const [fetchNote, setFetchNote] = useState<string | null>(null)
   const [fetchErrors, setFetchErrors] = useState<SnapshotError[]>([])
+  const [readSummary, setReadSummary] = useState<ReadSummary[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -53,6 +58,15 @@ export function FootprintAudit() {
         setPolicySource(privacySnapshot.finalUrl)
       }
       setFetchErrors(result.errors)
+      setReadSummary(
+        result.snapshots.map((snapshot) => ({
+          kind: snapshot.kind,
+          label: snapshot.kindLabel,
+          kept: snapshot.chars,
+          truncated: snapshot.truncated,
+          prioritized: Boolean((snapshot as UrlSnapshot & FetchedClause).prioritized),
+        })),
+      )
       setFetchNote(
         result.snapshots.length
           ? `Read ${result.snapshots.length} page(s) and filled the boxes below. Edit anything clipped or missing.`
@@ -176,6 +190,23 @@ export function FootprintAudit() {
             </Button>
             {fetchNote ? <span className="text-[13px] text-muted">{fetchNote}</span> : null}
           </div>
+          {readSummary.length ? (
+            <ul className="mt-2 flex flex-col gap-1 text-[12px] text-faint">
+              {readSummary.map((item) => (
+                <li key={item.kind} className="flex items-center gap-1.5">
+                  <Filter className="size-3 shrink-0" aria-hidden />
+                  <span>
+                    {item.label}: {item.kept.toLocaleString()} chars kept ·{' '}
+                    {item.truncated
+                      ? item.prioritized
+                        ? 'AI/policy clauses prioritised'
+                        : 'opening kept; no high-signal clause past the cut'
+                      : 'read in full'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {fetchErrors.length ? (
             <div className="mt-3 flex flex-col gap-2">
               {fetchErrors.map((item) => (

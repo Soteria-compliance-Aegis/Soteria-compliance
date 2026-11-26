@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-import { useLocation } from './lib/router'
-import { NotFound } from './pages/NotFound'
+import { scrollToHash, useLocation } from './lib/router'
 import { Workspace } from './pages/Workspace'
 
 /*
@@ -19,6 +18,7 @@ const routes = [
   { path: '/documents', title: 'Documents', render: () => <Workspace view="library" /> },
   { path: '/documents/:id', title: 'Audit', render: () => <Workspace view="document" /> },
   { path: '/brief/:id', title: 'Mini-audit', render: () => <Workspace view="brief" /> },
+  { path: '/console', title: 'Console', render: () => <Workspace view="console" /> },
 ]
 
 function resolve(path: string) {
@@ -41,7 +41,7 @@ export function App() {
   const first = useRef(true)
 
   useEffect(() => {
-    document.title = hit ? `${hit.title} | Aegis` : 'Not found | Aegis'
+    document.title = hit ? `${hit.title} | Soteria` : 'Not found | Soteria'
   }, [hit])
 
   // Jump to the hash target or the top, and move focus on real navigations.
@@ -56,7 +56,11 @@ export function App() {
       }
       const isFirst = first.current
       first.current = false
-      window.scrollTo({ top: 0 })
+      // A console launch link such as /#upload waits for its card, then jumps to
+      // it; a plain navigation starts at the top. Never both — the smooth scroll
+      // would win the animation and cancel the anchor jump.
+      if (hash && target) scrollToHash(hash, false)
+      else window.scrollTo({ top: 0 })
       if (!isFirst && !hash) main.current?.focus({ preventScroll: true })
     }
     raf = requestAnimationFrame(run)
@@ -72,7 +76,7 @@ export function App() {
         Skip to content
       </a>
       <main id="main" ref={main} tabIndex={-1} className="outline-none">
-        {hit ? hit.render() : <NotFound />}
+        {hit ? hit.render() : <Workspace view="notFound" />}
       </main>
     </>
   )

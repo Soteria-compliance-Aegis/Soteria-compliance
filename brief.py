@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from rules import REGULATIONS
+from rules import REGULATIONS, REMEDIATION_CONTRACT, normalize_remediation
 
 MISSING_FROM_POLICY = "Missing completely from Privacy Policy"
 
@@ -17,7 +17,7 @@ MISSING_FROM_POLICY = "Missing completely from Privacy Policy"
 # the prompt plus the brief's output comfortably inside one window.
 HOMEPAGE_MAX_CHARS = 5_000
 PRIVACY_MAX_CHARS = 8_000
-BRIEF_MAX_OUTPUT_TOKENS = 1_600
+BRIEF_MAX_OUTPUT_TOKENS = 2_100
 
 NOTE = (
     "This public footprint check is an operational readiness assessment, "
@@ -55,6 +55,8 @@ HARD RULES — follow all of them on every run:
 5. A missing disclosure is a gap, not a violation. Only call something a risk,
    never a breach or a violation, unless the text itself makes a prohibited
    claim.
+6. Every gap also carries a remediation_plan with all five parts built from the
+   evidence, naming the rubric and any dated exposure.
 
 Return ONLY a JSON object shaped exactly like this, with 1 to 3 gaps ordered
 highest confidence and deal impact first:
@@ -66,7 +68,17 @@ highest confidence and deal impact first:
       "homepage_claim": "verbatim quote from the homepage copy",
       "privacy_policy_quote": "verbatim quote from the privacy policy, or Missing completely from Privacy Policy",
       "risk": "1-2 sentences naming the rule, any 2027 deadline, and the business impact",
-      "fix": "one concrete sentence a founder can action this week"
+      "fix": "one concrete sentence a founder can action this week",
+      "remediation_plan": {
+        "problem": "the exact claim-vs-policy mismatch, naming the rubric and severity",
+        "rootCause": "why the gap happened operationally",
+        "consequences": "procurement/legal stall or rejection, plus the dated exposure",
+        "exactFix": {
+          "copyRedline": "exact replacement wording for the homepage or product claim",
+          "policyOrControlPatch": "exact privacy-policy addendum or product guardrail"
+        },
+        "prevention": "one repeatable release check, logging rule or claim-diff cadence"
+      }
     }
   ]
 }
@@ -98,6 +110,7 @@ URL: {url or "not provided"}
 
 REGULATORY RUBRICS:
 {_rubric_reference()}
+{REMEDIATION_CONTRACT}
 
 HOMEPAGE / PRODUCT COPY:
 \"\"\"
@@ -213,6 +226,13 @@ def normalize_brief(
                 "privacy_policy_quote": policy_quote,
                 "risk": risk,
                 "fix": fix,
+                "remediation_plan": normalize_remediation(
+                    item.get("remediation_plan"),
+                    severity="Medium",
+                    status="Warning",
+                    evidence=claim,
+                    note=fix,
+                ),
             }
         )
         if len(gaps) == 3:

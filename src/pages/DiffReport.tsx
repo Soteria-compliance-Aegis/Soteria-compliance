@@ -3,7 +3,8 @@ import { ArrowLeft, ArrowUpRight, Printer } from 'lucide-react'
 
 import { Button } from '../components/Button'
 import { Notice } from '../components/Controls'
-import { MISSING_FROM_POLICY, fetchDiff } from '../lib/aegis'
+import { RemediationBreakdown } from '../components/Remediation'
+import { MISSING_FROM_POLICY, fetchDiff, remediationOf } from '../lib/aegis'
 import type { Diff, DiffGap, DiffSeverity } from '../lib/aegis'
 import { Link } from '../lib/router'
 
@@ -23,6 +24,7 @@ function Severity({ value }: { value: DiffSeverity }) {
 
 function Gap({ gap, index }: { gap: DiffGap; index: number }) {
   const missing = gap.policy_quote === MISSING_FROM_POLICY
+  const plan = remediationOf(gap.remediation_plan)
   return (
     <section className="break-inside-avoid border-t border-neutral-300 pt-3.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -67,9 +69,13 @@ function Gap({ gap, index }: { gap: DiffGap; index: number }) {
       <p className="mt-2 text-[12.5px] leading-[1.55]">
         <span className="font-semibold">Why it matters:</span> {gap.why_it_matters}
       </p>
-      <p className="mt-0.5 text-[12.5px] leading-[1.55]">
-        <span className="font-semibold">Fix:</span> {gap.remediation}
-      </p>
+      {plan ? (
+        <RemediationBreakdown plan={plan} surface="paper" />
+      ) : (
+        <p className="mt-0.5 text-[12.5px] leading-[1.55]">
+          <span className="font-semibold">Fix:</span> {gap.remediation}
+        </p>
+      )}
     </section>
   )
 }

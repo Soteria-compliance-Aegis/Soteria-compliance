@@ -18,17 +18,46 @@ from dotenv import load_dotenv
 from groq import APIConnectionError, APIStatusError, APITimeoutError, Groq, RateLimitError
 
 from brief import BRIEF_MAX_OUTPUT_TOKENS, build_brief_prompt, normalize_brief
-from rules import NA_STATUS, REGULATIONS, REGULATION_IDS, Status, build_prompt
+from rules import (
+    NA_STATUS,
+    REGULATIONS,
+    REGULATION_IDS,
+    Status,
+    build_prompt,
+    normalize_remediation,
+)
 
 MODEL = "openai/gpt-oss-120b"
 MODEL_FAST = "openai/gpt-oss-20b"
 
+# The dev console can re-route the engine at runtime. These stay the shipped
+# defaults for the CLI, the tests and anything that asks for a default.
+_ACTIVE_MODELS: dict[str, str] = {"deep": MODEL, "fast": MODEL_FAST}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def configure_models(deep: str | None = None, fast: str | None = None) -> dict[str, str]:
+    """Point later engine calls at a different Groq model for this process."""
+    with _ACTIVE_LOCK:
+        if deep:
+            _ACTIVE_MODELS["deep"] = deep
+        if fast:
+            _ACTIVE_MODELS["fast"] = fast
+        return dict(_ACTIVE_MODELS)
+
+
+def active_models() -> dict[str, str]:
+    """The model each channel currently routes to."""
+    with _ACTIVE_LOCK:
+        return dict(_ACTIVE_MODELS)
+
 # Free tier guardrail: stay strictly under 8,000 tokens per minute.
 TPM_LIMIT = 8_000
-# Seven findings with verbatim quotes need room, and gpt-oss reasoning counts too.
-# Sized so the scraper's full document cap still fits 8,000 TPM together with
-# the screening pass; see tests/test_offline.py for the enforced arithmetic.
-DEFAULT_MAX_OUTPUT_TOKENS = 1_300
+# Seven findings with verbatim quotes, plus a five-part remediation entry for
+# every open one, and gpt-oss reasoning counts too. Sized so the scraper's full
+# document cap still fits 8,000 TPM together with the screening pass; see
+# tests/test_offline.py for the enforced arithmetic.
+DEFAULT_MAX_OUTPUT_TOKENS = 1_750
 # The screening pass only needs a short excerpt and a one-word label, so it adds
 # roughly 650 tokens to a scan and still leaves the deep audit inside 8,000 TPM.
 SCREEN_MAX_CHARS = 1_200
@@ -175,7 +204,7 @@ def _extract_json(raw: str) -> dict[str, Any]:
 def _chat(
     messages: list[dict],
     *,
-    model: str = MODEL,
+    model: str | None = None,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     reasoning_effort: str | None = "low",
 ) -> str:
@@ -186,6 +215,7 @@ def _chat(
     ``max_tokens`` is deprecated on Groq; gpt-oss also spends part of that
     budget on reasoning, so reasoning is dialled down.
     """
+    model = model or active_models()["deep"]
     client = _client()
     params: dict[str, Any] = {
         "model": model,
@@ -284,13 +314,23 @@ def _match_regulation(value: Any) -> str | None:
     return None
 
 
-def normalize_findings(items: Any) -> list[dict[str, str]]:
+def normalize_findings(items: Any, remediation: Any = None) -> list[dict[str, Any]]:
     """Return exactly one normalized finding per regulation, in rubric order.
 
     Missing or unrecognized entries become manual-review warnings so the report
-    always covers the full scope.
+    always covers the full scope. The five-part remediation arrives as its own
+    array so a truncated response loses explanatory copy, never the finding
+    itself; every open finding still gets a complete block.
     """
-    by_id: dict[str, dict[str, str]] = {}
+    fixes: dict[str, dict[str, Any]] = {}
+    for entry in remediation if isinstance(remediation, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        regulation_id = _match_regulation(entry.get("regulation"))
+        if regulation_id and regulation_id not in fixes:
+            fixes[regulation_id] = entry
+
+    by_id: dict[str, dict[str, Any]] = {}
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
@@ -299,33 +339,48 @@ def normalize_findings(items: Any) -> list[dict[str, str]]:
             continue
         status = _normalize_status(item.get("status", "Warning"))
         out_of_scope = status == NA_STATUS
+        severity = _normalize_severity(item.get("severity"), status)
+        # An out-of-scope item must never ship a quote: it is a statement
+        # about applicability, not evidence of a problem.
+        evidence = "" if out_of_scope else _clean_quote(item.get("evidence_quote"))
+        note = str(item.get("remediation_note") or "").strip() or (
+            "Confirm whether this regulation applies to the company's activities."
+            if out_of_scope
+            else "Review manually; the model returned no remediation for this regulation."
+        )
         by_id[regulation_id] = {
             "regulation": REGULATIONS[regulation_id]["name"],
             "regulation_id": regulation_id,
             "status": status,
-            "severity": _normalize_severity(item.get("severity"), status),
-            # An out-of-scope item must never ship a quote: it is a statement
-            # about applicability, not evidence of a problem.
-            "evidence_quote": "" if out_of_scope else _clean_quote(item.get("evidence_quote")),
-            "remediation_note": str(item.get("remediation_note") or "").strip()
-            or (
-                "Confirm whether this regulation applies to the company's activities."
-                if out_of_scope
-                else "Review manually; the model returned no remediation for this regulation."
+            "severity": severity,
+            "evidence_quote": evidence,
+            "remediation_note": note,
+            "remediation_plan": normalize_remediation(
+                fixes.get(regulation_id),
+                regulation_id=regulation_id,
+                severity=severity,
+                status=status,
+                evidence=evidence,
+                note=note,
             ),
         }
 
     findings = []
     for regulation_id in REGULATION_IDS:
+        if regulation_id in by_id:
+            findings.append(by_id[regulation_id])
+            continue
         findings.append(
-            by_id.get(regulation_id)
-            or {
+            {
                 "regulation": REGULATIONS[regulation_id]["name"],
                 "regulation_id": regulation_id,
                 "status": "Warning",
                 "severity": "Medium",
                 "evidence_quote": "",
                 "remediation_note": "The model returned no finding for this regulation; review manually.",
+                "remediation_plan": normalize_remediation(
+                    None, regulation_id=regulation_id, status="Warning"
+                ),
             }
         )
     return findings
@@ -380,7 +435,7 @@ def quote_in_document(quote: str, document_text: str) -> bool:
     return not tail or tail in haystack[start + len(head) :]
 
 
-def _apply_evidence_rules(findings: list[dict[str, str]], document_text: str) -> list[dict[str, str]]:
+def _apply_evidence_rules(findings: list[dict[str, Any]], document_text: str) -> list[dict[str, Any]]:
     """Enforce that a Fail points at real problematic text in the document.
 
     A quote that cannot be found was either paraphrased or invented, so it is
@@ -406,6 +461,16 @@ def _apply_evidence_rules(findings: list[dict[str, str]], document_text: str) ->
                     " No problematic wording was found in the document, so this is"
                     " graded as a disclosure gap rather than a violation."
                 )
+        # Re-normalise against the final status and severity: a downgraded Fail
+        # keeps its block, and an out-of-scope item ships blanks.
+        finding["remediation_plan"] = normalize_remediation(
+            finding.get("remediation_plan"),
+            regulation_id=finding["regulation_id"],
+            severity=finding["severity"],
+            status=finding["status"],
+            evidence=finding["evidence_quote"],
+            note=finding["remediation_note"],
+        )
     return findings
 
 
@@ -413,7 +478,7 @@ def audit_document(
     document_text: str,
     *,
     source: str = "document",
-    model: str = MODEL,
+    model: str | None = None,
     budget: TokenBudget | None = None,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> list[dict[str, str]]:
@@ -430,7 +495,10 @@ def audit_document(
         print(f"[auditor] unparseable response for {source}: {exc}")
         parsed = {}
 
-    findings = normalize_findings(parsed.get("findings") if isinstance(parsed, dict) else None)
+    findings = normalize_findings(
+        parsed.get("findings") if isinstance(parsed, dict) else None,
+        parsed.get("remediation") if isinstance(parsed, dict) else None,
+    )
     return _apply_evidence_rules(findings, document_text)
 
 
@@ -440,7 +508,7 @@ def generate_brief(
     homepage_copy: str,
     privacy_policy: str,
     *,
-    model: str = MODEL,
+    model: str | None = None,
     budget: TokenBudget | None = None,
 ) -> dict[str, Any]:
     """Compare homepage claims and the privacy policy into a 1-page brief."""
@@ -498,7 +566,7 @@ def _normalize_label(value: Any) -> str:
 def classify_page(
     document_text: str,
     *,
-    model: str = MODEL_FAST,
+    model: str | None = None,
     budget: TokenBudget | None = None,
 ) -> str:
     """Screen a page with the fast model and return one of ``PAGE_LABELS``.
@@ -517,6 +585,7 @@ def classify_page(
         + DEFAULT_CLASSIFY_OUTPUT_TOKENS
     )
 
+    model = model or active_models()["fast"]
     raw = _chat(messages, model=model, max_output_tokens=DEFAULT_CLASSIFY_OUTPUT_TOKENS)
     label = _normalize_label(_extract_json(raw).get("label"))
     if not label:

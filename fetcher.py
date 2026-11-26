@@ -26,7 +26,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from scraper import clean_html, truncate
+from scraper import MAX_SOURCE_CHARS, clean_html, select_clauses, truncate
 
 CONNECT_TIMEOUT = 5.0
 DEFAULT_TIMEOUT = 10.0
@@ -89,6 +89,10 @@ class Snapshot:
     chars: int
     truncated: bool
     fetched_at: str
+    # True when high-signal AI/policy clauses from beyond the head cut survived
+    # the character cap, so the workspace can say nothing critical was dropped.
+    prioritized: bool = False
+    signal_hits: int = 0
 
     def public(self) -> dict[str, object]:
         return {
@@ -101,6 +105,8 @@ class Snapshot:
             "status": self.status,
             "chars": self.chars,
             "truncated": self.truncated,
+            "prioritized": self.prioritized,
+            "signalHits": self.signal_hits,
             "fetchedAt": self.fetched_at,
         }
 
@@ -275,11 +281,15 @@ def fetch_page(
                     not content_type and html.lstrip().startswith("<")
                 )
                 if is_html:
-                    text = clean_html(html, max_chars=limit)
+                    source = clean_html(html, max_chars=MAX_SOURCE_CHARS)
                     title = _title(html)
                 else:
-                    text = truncate(_WHITESPACE_RE.sub(" ", html), limit)
+                    source = _WHITESPACE_RE.sub(" ", html)
                     title = ""
+                # Reduce the whole page to the cap by keeping AI/policy clauses
+                # first, instead of losing the tail of a long privacy policy.
+                selection = select_clauses(source, limit)
+                text = selection.text
         except requests.RequestException as exc:
             raise FetchError(
                 "The page stopped before it finished downloading. Paste the text instead.",
@@ -301,8 +311,10 @@ def fetch_page(
             text=text,
             status=response.status_code,
             chars=len(text),
-            truncated=byte_capped or len(text) >= limit,
+            truncated=byte_capped or selection.original_chars > len(text),
             fetched_at=_now(),
+            prioritized=selection.prioritized,
+            signal_hits=selection.signal_hits,
         )
     finally:
         session.close()

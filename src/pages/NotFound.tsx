@@ -6,7 +6,7 @@ import { Eyebrow } from '../components/Typography'
 
 export function NotFound() {
   return (
-    <div className="mx-auto flex min-h-screen max-w-[620px] items-center px-6">
+    <div className="mx-auto flex max-w-[620px] items-center py-16">
       <Card tone="plain" className="w-full p-8 sm:p-10">
         <Eyebrow tone="fire">404</Eyebrow>
         <h1 className="display mt-3 text-[34px]">Nothing on record here.</h1>

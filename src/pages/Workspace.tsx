@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowLeft, ArrowUpRight, Bug, Download, FileText, Globe, RefreshCw, ShieldCheck, Trash2, Wrench } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Bug, Download, FileText, Filter, Globe, Printer, RefreshCw, ShieldCheck, Trash2, Wrench } from 'lucide-react'
 
-import { AegisLogo } from '../components/Brand'
+import { SoteriaLogo } from '../components/Brand'
 import { Button, buttonClass } from '../components/Button'
 import { Card } from '../components/Card'
 import { Badge, Chip, EmptyState, Notice } from '../components/Controls'
 import { Field, Input } from '../components/Field'
 import { Eyebrow } from '../components/Typography'
+import { AegisPipeline } from '../components/AegisPipeline'
+import { AegisReading } from '../components/AegisReading'
+import { BuyerReadinessSummary, clauseNote } from '../components/BuyerReadiness'
+import type { ClauseReport } from '../components/BuyerReadiness'
+import { OverviewHero } from '../components/HeroSequence'
+import { RemediationBreakdown } from '../components/Remediation'
 import { BriefForm } from '../components/BriefForm'
 import { UploadPanel } from '../components/UploadPanel'
 import { ArtifactsPage } from './Artifacts'
+import { Console } from './Console'
+import { NotFound } from './NotFound'
 import { BriefReport } from './BriefReport'
 import { DiffReport } from './DiffReport'
 import { FootprintAudit } from './FootprintAudit'
@@ -25,6 +33,7 @@ import {
   formatWhen,
   openFindings,
   reauditDocument,
+  remediationOf,
   reportUrl,
   uploadDocument,
 } from '../lib/aegis'
@@ -35,6 +44,8 @@ import { Link, navigate, useLocation } from '../lib/router'
 /* ------------------------------------------------------------------ */
 /* Shared                                                             */
 /* ------------------------------------------------------------------ */
+
+type DocumentDetailView = DocumentDetail & { clauseReport?: ClauseReport | null }
 
 const STATUS_STYLE: Record<Status, string> = {
   Fail: 'bg-fire-1/15 text-fire-3 ring-1 ring-inset ring-fire-1/35',
@@ -245,20 +256,19 @@ function Overview() {
         { id: 'ccpa_admt', name: 'California ADMT / CCPA' },
         { id: 'texas_traiga', name: 'Texas TRAIGA' },
         { id: 'nyc_ll144', name: 'NYC Local Law 144' },
+        { id: 'colorado_sb26_189', name: 'Colorado SB 26-189' },
         { id: 'ftc_section5', name: 'FTC Section 5 (AI-washing)' },
+        { id: 'illinois_hb3773', name: 'Illinois HB 3773' },
         { id: 'india_dpdp', name: 'India DPDP Act' },
       ]
 
   return (
     <>
-      <section className="pt-12 pb-8 sm:pt-16">
-        <Eyebrow tone="fire">AI governance workspace</Eyebrow>
-        <h1 className="display mt-3 max-w-[760px] text-balance text-[40px] sm:text-[54px]">Every claim needs evidence.</h1>
-        <p className="mt-4 max-w-[640px] text-pretty text-[17px] leading-[1.55] text-muted">
-          Audit the public footprint, red-team the agent, and generate the governance documents buyers ask for —
-          each finding quoted verbatim and mapped to a 2026–2027 US deadline. Technical readiness, not legal advice.
-        </p>
-      </section>
+      <OverviewHero />
+
+      <AegisReading />
+
+      <AegisPipeline />
 
       <div className="grid gap-2 md:grid-cols-3">
         {[
@@ -307,7 +317,7 @@ function Overview() {
       </div>
 
       {loadError ? (
-        <Notice tone="error" title="The Aegis API is not answering" className="mb-3">
+        <Notice tone="error" title="The Soteria API is not answering" className="mb-3">
           {loadError}. Start it with <span className="font-mono text-[13px]">python server.py</span>.
         </Notice>
       ) : null}
@@ -333,7 +343,7 @@ function Overview() {
       </div>
 
       <div className="mt-2 grid gap-2 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
-        <Card tone="plain" className="relative p-5 sm:p-6">
+        <Card id="brief" tone="plain" className="relative p-5 sm:p-6">
           <div
             aria-hidden
             className="pointer-events-none absolute -top-32 left-1/2 h-64 w-[460px] -translate-x-1/2 rounded-full bg-fire-1/20 blur-[90px]"
@@ -369,7 +379,7 @@ function Overview() {
         </Panel>
       </div>
 
-      <Card tone="plain" className="mt-2 p-5 sm:p-6">
+      <Card id="upload" tone="plain" className="mt-2 p-5 sm:p-6">
         <div className="mb-4 flex items-center justify-between gap-4">
           <h2 className="text-[16px] font-medium text-white">Upload a policy file</h2>
           <span className="text-[13px] text-faint">existing document audit</span>
@@ -539,6 +549,7 @@ function Library() {
 
 function FindingCard({ finding }: { finding: Finding }) {
   const gap = finding.status === 'Warning' && !finding.evidence_quote
+  const plan = remediationOf(finding.remediation_plan)
   return (
     <Card tone="plain" className="p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -570,23 +581,28 @@ function FindingCard({ finding }: { finding: Finding }) {
         )}
       </div>
 
-      <div className="mt-5">
-        <Eyebrow tone="muted">Recommended change</Eyebrow>
-        <p className="mt-2 text-[14px] leading-relaxed text-soft">{finding.remediation_note}</p>
-      </div>
+      {plan ? (
+        <RemediationBreakdown plan={plan} />
+      ) : (
+        <div className="mt-5">
+          <Eyebrow tone="muted">Recommended change</Eyebrow>
+          <p className="mt-2 text-[14px] leading-relaxed text-soft">{finding.remediation_note}</p>
+        </div>
+      )}
     </Card>
   )
 }
 
 function DocumentView({ id }: { id: string }) {
-  const [doc, setDoc] = useState<DocumentDetail | null>(null)
+  const [doc, setDoc] = useState<DocumentDetailView | null>(null)
+  const [mode, setMode] = useState<'detail' | 'buyer'>('detail')
   const [error, setError] = useState<string | null>(null)
   const [rerunning, setRerunning] = useState(false)
   const [confirm, setConfirm] = useState(false)
 
   const load = useCallback(async () => {
     try {
-      setDoc(await fetchDocument(id))
+      setDoc((await fetchDocument(id)) as DocumentDetailView)
       setError(null)
     } catch (caught) {
       setError((caught as Error).message)
@@ -657,9 +673,9 @@ function DocumentView({ id }: { id: string }) {
 
   return (
     <>
-      <div className="pt-8">{back}</div>
+      <div className={cx('pt-8', mode === 'buyer' && 'no-print')}>{back}</div>
 
-      <div className="mt-2 flex flex-wrap items-start justify-between gap-5 pb-7">
+      <div className={cx('mt-2 flex flex-wrap items-start justify-between gap-5 pb-7', mode === 'buyer' && 'no-print')}>
         <div className="min-w-0">
           <h1 className="display max-w-[720px] text-[32px] break-words sm:text-[40px]">{doc.name}</h1>
           <p className="mt-2 text-[13px] text-faint">
@@ -667,6 +683,12 @@ function DocumentView({ id }: { id: string }) {
             {formatWhen(doc.createdAt)}
             {doc.auditedAt ? ` · audited ${formatWhen(doc.auditedAt)}` : ''}
           </p>
+          {clauseNote(doc.clauseReport) ? (
+            <span className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-2.5 py-1 text-[11.5px] text-faint ring-1 ring-inset ring-white/10">
+              <Filter className="size-3" aria-hidden />
+              {clauseNote(doc.clauseReport)}
+            </span>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatePill doc={doc} />
@@ -711,11 +733,46 @@ function DocumentView({ id }: { id: string }) {
 
       {running ? (
         <Notice tone="info" title="Grading in progress" className="mb-3">
-          Five rubrics, one Groq call. On the free tier this takes about a minute; the page refreshes itself.
+          Seven rubrics, one Groq call. On the free tier this takes about a minute; the page refreshes itself.
         </Notice>
       ) : null}
 
       {doc.status === 'ready' ? (
+        <div className="no-print mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex rounded-control bg-white/[0.05] p-1 ring-1 ring-inset ring-white/10">
+            {(
+              [
+                ['detail', 'Audit detail'],
+                ['buyer', 'Buyer 1-pager'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMode(value)}
+                aria-pressed={mode === value}
+                className={cx(
+                  'inline-flex h-8 items-center rounded-[8px] px-3 text-[13px] transition-colors',
+                  mode === value ? 'bg-white/10 text-white' : 'text-muted hover:text-white',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {mode === 'buyer' ? (
+            <Button variant="secondary" size="sm" onClick={() => window.print()}>
+              <Printer className="size-3.5" aria-hidden />
+              Print 1-pager
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {doc.status === 'ready' ? (
+        mode === 'buyer' ? (
+          <BuyerReadinessSummary doc={doc} clause={doc.clauseReport} />
+        ) : (
         <>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
             {[
@@ -789,7 +846,8 @@ function DocumentView({ id }: { id: string }) {
               </div>
             </>
           ) : null}
-        </>
+          </>
+        )
       ) : null}
     </>
   )
@@ -799,12 +857,13 @@ function DocumentView({ id }: { id: string }) {
 /* Shell                                                              */
 /* ------------------------------------------------------------------ */
 
-const TABS = [
+const TABS: { label: string; href: string; step?: string }[] = [
   { label: 'Overview', href: '/' },
-  { label: '1 · Footprint', href: '/audit' },
-  { label: '2 · Red-team', href: '/redteam' },
-  { label: '3 · Artifacts', href: '/artifacts' },
+  { label: 'Footprint', href: '/audit', step: '1' },
+  { label: 'Red-team', href: '/redteam', step: '2' },
+  { label: 'Artifacts', href: '/artifacts', step: '3' },
   { label: 'Documents', href: '/documents' },
+  { label: 'Console', href: '/console' },
 ]
 
 export type WorkspaceView =
@@ -818,6 +877,8 @@ export type WorkspaceView =
   | 'redteamRun'
   | 'artifacts'
   | 'artifact'
+  | 'console'
+  | 'notFound'
 
 export function Workspace({ view }: { view: WorkspaceView }) {
   const { path } = useLocation()
@@ -831,44 +892,84 @@ export function Workspace({ view }: { view: WorkspaceView }) {
           ? '/redteam'
           : view === 'artifacts' || view === 'artifact'
             ? '/artifacts'
-            : '/'
+            : view === 'console'
+              ? '/console'
+              : '/'
 
   return (
-    <div className="app-shell min-h-screen bg-black">
-      <header className="no-print sticky top-0 z-40 border-b border-white/10 bg-black/75 backdrop-blur-xl">
-        <div className="mx-auto flex h-[68px] max-w-[1280px] items-center justify-between gap-4 px-5 sm:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <Link href="/" aria-label="Aegis overview" className="rounded-[10px]">
-              <AegisLogo />
-            </Link>
-            <span className="hidden text-white/20 sm:inline" aria-hidden>
-              /
-            </span>
-            <span className="hidden truncate text-[15px] text-muted sm:inline">compliance workspace</span>
-            <Badge tone="neutral" className="hidden md:inline-flex">
-              Local
-            </Badge>
+    <div className="app-shell min-h-screen bg-bg">
+      <header className="no-print sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur-xl">
+        <div className="mx-auto max-w-[1280px] px-5 sm:px-8">
+          <div className="flex h-16 items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              <Link href="/" aria-label="Soteria overview" className="rounded-[8px]">
+                <SoteriaLogo />
+              </Link>
+              <span className="hidden border-l border-line pl-4 text-[13px] text-faint lg:inline">compliance workspace</span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <nav aria-label="Workspace" className="hidden items-center md:flex">
+                {TABS.map((tab) => (
+                  <Link
+                    key={tab.href}
+                    href={tab.href}
+                    aria-current={active === tab.href ? 'page' : undefined}
+                    className={cx(
+                      'relative inline-flex h-9 items-center gap-2 px-3 text-[14px] transition-colors',
+                      active === tab.href ? 'text-fg' : 'text-muted hover:text-fg',
+                    )}
+                  >
+                    {tab.step ? <span className="font-mono text-[10.5px] tabular-nums text-brass-text">{tab.step}</span> : null}
+                    {tab.label}
+                    <span
+                      aria-hidden
+                      className={cx(
+                        'absolute inset-x-3 -bottom-[13px] h-[2px] bg-verdigris-text transition-opacity',
+                        active === tab.href ? 'opacity-100' : 'opacity-0',
+                      )}
+                    />
+                  </Link>
+                ))}
+              </nav>
+              <Link href="/audit" className={buttonClass('primary', 'sm')}>
+                New audit
+              </Link>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
-            <nav aria-label="Workspace" className="hidden items-center gap-1 lg:flex">
+
+          {/* The same five destinations stay reachable below the md breakpoint. */}
+          <nav
+            aria-label="Workspace"
+            className="-mx-5 overflow-x-auto border-t border-line px-5 sm:-mx-8 sm:px-8 md:hidden"
+          >
+            <ul className="flex w-max items-center gap-1 py-2">
               {TABS.map((tab) => (
-                <Link
-                  key={tab.href}
-                  href={tab.href}
-                  aria-current={active === tab.href ? 'page' : undefined}
-                  className={cx(
-                    'inline-flex h-10 items-center rounded-control px-4 text-[14px] font-medium transition-colors',
-                    active === tab.href ? 'bg-white text-black' : 'text-soft hover:bg-white/[0.08] hover:text-white',
-                  )}
-                >
-                  {tab.label}
-                </Link>
+                <li key={tab.href}>
+                  <Link
+                    href={tab.href}
+                    aria-current={active === tab.href ? 'page' : undefined}
+                    className={cx(
+                      'inline-flex h-9 items-center gap-2 whitespace-nowrap rounded-control px-3 text-[13.5px] transition-colors',
+                      active === tab.href ? 'bg-ice text-[#0c1512]' : 'text-muted hover:bg-white/[0.05] hover:text-fg',
+                    )}
+                  >
+                    {tab.step ? (
+                      <span
+                        className={cx(
+                          'font-mono text-[10.5px] tabular-nums',
+                          active === tab.href ? 'text-[#5b4520]' : 'text-brass-text',
+                        )}
+                      >
+                        {tab.step}
+                      </span>
+                    ) : null}
+                    {tab.label}
+                  </Link>
+                </li>
               ))}
-            </nav>
-            <Link href="/audit" className={cx(buttonClass('primary', 'sm'), 'hidden sm:inline-flex')}>
-              New audit
-            </Link>
-          </div>
+            </ul>
+          </nav>
         </div>
       </header>
 
@@ -891,15 +992,32 @@ export function Workspace({ view }: { view: WorkspaceView }) {
           <ArtifactsPage />
         ) : view === 'artifact' ? (
           <ArtifactsPage artifactId={id} />
+        ) : view === 'console' ? (
+          <Console />
+        ) : view === 'notFound' ? (
+          <NotFound />
         ) : (
           <DocumentView id={id} />
         )}
       </main>
 
-      <footer className="no-print border-t border-white/10">
-        <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3 px-5 py-6 text-[13px] text-faint sm:px-8">
-          <span>Aegis · technical AI risk assessment, not legal advice.</span>
-          <span className="font-mono">FTC §5 · CA ADMT · CO SB 26-189 · TRAIGA · LL144 · DPDP</span>
+      <footer className="no-print border-t border-line">
+        <div className="mx-auto max-w-[1280px] px-5 py-9 sm:px-8">
+          <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <SoteriaLogo className="opacity-90" />
+              <p className="mt-2.5 max-w-[300px] text-[13px] leading-relaxed text-faint">
+                Technical AI risk assessment. Findings quote the supplied text; nothing here is legal advice.
+              </p>
+            </div>
+            <div className="sm:max-w-[440px] sm:text-right">
+              <p className="font-mono text-[11px] text-muted">Seven rubrics in this build</p>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-faint">
+                FTC §5, California ADMT, Colorado SB 26-189, Texas TRAIGA, NYC Local Law 144, Illinois HB 3773, India
+                DPDP
+              </p>
+            </div>
+          </div>
         </div>
       </footer>
     </div>

@@ -231,6 +231,17 @@ def generate_artifact(
     return normalize_artifact(parsed if isinstance(parsed, dict) else {}, kind=kind, company=company)
 
 
+def _exact_fix(item: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the drafted redline and policy patch from a five-part plan."""
+    plan = item.get("remediation_plan")
+    if not isinstance(plan, dict):
+        return None
+    fix = plan.get("exactFix") if isinstance(plan.get("exactFix"), dict) else {}
+    redline = str(fix.get("copyRedline") or "").strip()
+    patch = str(fix.get("policyOrControlPatch") or "").strip()
+    return (redline, patch) if redline or patch else None
+
+
 def evidence_from_findings(
     *,
     diff: dict[str, Any] | None = None,
@@ -245,9 +256,11 @@ def evidence_from_findings(
         lines.append(str(diff.get("summary") or ""))
         for gap in diff.get("gaps", [])[:6]:
             frameworks = ", ".join(item.get("name", "") for item in gap.get("frameworks", []))
+            fix = _exact_fix(gap)
             lines.append(
                 f"- [{gap.get('severity')}] {gap.get('title')}: claim \"{gap.get('claim_quote')}\" / "
                 f"policy \"{gap.get('policy_quote')}\" (frameworks: {frameworks or 'n/a'})"
+                + (f" | redline: {fix[0]} | policy patch: {fix[1]}" if fix else "")
             )
 
     if redteam:
@@ -255,18 +268,22 @@ def evidence_from_findings(
         for result in redteam.get("results", []):
             if result.get("status") == "Pass":
                 continue
+            fix = _exact_fix(result)
             lines.append(
                 f"- [{result.get('status')}] {result.get('probeId')} ({result.get('category')}): "
                 f"risk: {result.get('risk')} | fix: {result.get('fix')}"
+                + (f" | copy: {fix[0]} | control: {fix[1]}" if fix else "")
             )
 
     if brief:
         lines.append(f"PUBLIC FOOTPRINT MINI-AUDIT — {brief.get('company', '')}")
         lines.append(str(brief.get("snapshot") or ""))
         for gap in brief.get("gaps", [])[:3]:
+            fix = _exact_fix(gap)
             lines.append(
                 f"- {gap.get('title')}: claim \"{gap.get('homepage_claim')}\" / "
                 f"policy \"{gap.get('privacy_policy_quote')}\""
+                + (f" | redline: {fix[0]} | policy patch: {fix[1]}" if fix else "")
             )
 
     return "\n".join(line for line in lines if line).strip()

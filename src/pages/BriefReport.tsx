@@ -3,7 +3,8 @@ import { ArrowLeft, Printer } from 'lucide-react'
 
 import { Button } from '../components/Button'
 import { Notice } from '../components/Controls'
-import { fetchBrief, MISSING_FROM_POLICY } from '../lib/aegis'
+import { RemediationBreakdown } from '../components/Remediation'
+import { fetchBrief, MISSING_FROM_POLICY, remediationOf } from '../lib/aegis'
 import type { Brief, BriefGap } from '../lib/aegis'
 import { Link } from '../lib/router'
 
@@ -95,7 +96,9 @@ export function BriefReport({ id }: { id: string }) {
               No high-confidence public gap was found in the supplied text. There is nothing to action from this check.
             </p>
           ) : (
-            brief.gaps.map((gap, index) => (
+            brief.gaps.map((gap, index) => {
+              const plan = remediationOf(gap.remediation_plan)
+              return (
               <section key={`${gap.title}-${index}`} className="break-inside-avoid">
                 <h3 className="text-[13.5px] font-semibold leading-snug">
                   {index + 1}. {gap.title}
@@ -109,11 +112,16 @@ export function BriefReport({ id }: { id: string }) {
                 <p className="mt-1.5 text-[12.5px] leading-[1.55]">
                   <span className="font-semibold">Regulatory &amp; Deal Risk:</span> {gap.risk}
                 </p>
-                <p className="mt-0.5 text-[12.5px] leading-[1.55]">
-                  <span className="font-semibold">1-Line Fix:</span> {gap.fix}
-                </p>
+                {plan ? (
+                  <RemediationBreakdown plan={plan} surface="paper" />
+                ) : (
+                  <p className="mt-0.5 text-[12.5px] leading-[1.55]">
+                    <span className="font-semibold">1-Line Fix:</span> {gap.fix}
+                  </p>
+                )}
               </section>
-            ))
+              )
+            })
           )}
         </div>
 

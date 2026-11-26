@@ -8,6 +8,44 @@ export type Counts = { fail: number; warning: number; pass: number; na: number; 
 
 export type RegulationState = { id: string; name: string; status: Status; severity: Severity }
 
+/**
+ * The five-part executive remediation attached to every flagged finding:
+ * what is wrong, why it happened, what it costs, the exact fix to paste, and
+ * the guardrail that stops it coming back. Server-side normalisation always
+ * fills all five parts for a Fail or Warning; a Pass or N/A carries blanks.
+ */
+export type FindingRemediation = {
+  problem: string
+  rootCause: string
+  consequences: string
+  exactFix: { copyRedline: string; policyOrControlPatch: string }
+  prevention: string
+}
+
+const EMPTY_EXACT_FIX = { copyRedline: '', policyOrControlPatch: '' }
+
+/** Normalise a plan for rendering; null when the finding has no breakdown yet. */
+export function remediationOf(value?: Partial<FindingRemediation> | null): FindingRemediation | null {
+  if (!value) return null
+  const fix = value.exactFix ?? EMPTY_EXACT_FIX
+  const plan: FindingRemediation = {
+    problem: value.problem ?? '',
+    rootCause: value.rootCause ?? '',
+    consequences: value.consequences ?? '',
+    exactFix: { copyRedline: fix.copyRedline ?? '', policyOrControlPatch: fix.policyOrControlPatch ?? '' },
+    prevention: value.prevention ?? '',
+  }
+  const filled = [
+    plan.problem,
+    plan.rootCause,
+    plan.consequences,
+    plan.exactFix.copyRedline,
+    plan.exactFix.policyOrControlPatch,
+    plan.prevention,
+  ].some(Boolean)
+  return filled ? plan : null
+}
+
 export type Finding = {
   regulation: string
   regulation_id: string
@@ -15,6 +53,7 @@ export type Finding = {
   severity: Severity
   evidence_quote: string
   remediation_note: string
+  remediation_plan?: FindingRemediation
 }
 
 export type DocumentSummary = {
@@ -52,6 +91,7 @@ export type BriefGap = {
   privacy_policy_quote: string
   risk: string
   fix: string
+  remediation_plan?: FindingRemediation
 }
 
 export type Brief = {
@@ -115,6 +155,7 @@ export type DiffGap = {
   frameworks: Framework[]
   why_it_matters: string
   remediation: string
+  remediation_plan?: FindingRemediation
 }
 
 export type Diff = {
@@ -162,6 +203,7 @@ export type ProbeResult = {
   severity: string
   risk: string
   fix: string
+  remediation_plan?: FindingRemediation
   simulated: boolean
 }
 

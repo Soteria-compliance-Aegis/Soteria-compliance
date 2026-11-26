@@ -78,6 +78,41 @@ def _summary_table(findings: list[dict]) -> str:
     return "\n".join(rows)
 
 
+def _remediation_block(finding: dict) -> str:
+    """Render the five-part remediation as an executive Markdown block."""
+    plan = finding.get("remediation_plan")
+    if not isinstance(plan, dict):
+        return ""
+    fix = plan.get("exactFix") if isinstance(plan.get("exactFix"), dict) else {}
+
+    blocks: list[str] = []
+    for label, key in (
+        ("1. Problem", "problem"),
+        ("2. Root cause", "rootCause"),
+        ("3. Consequences", "consequences"),
+    ):
+        text = str(plan.get(key) or "").strip()
+        if text:
+            blocks.append(f"**{label}** — {text}")
+
+    redline = str(fix.get("copyRedline") or "").strip()
+    patch = str(fix.get("policyOrControlPatch") or "").strip()
+    if redline or patch:
+        lines = ["**4. Exact fix**"]
+        if redline:
+            lines.append(f"- *Copy redline:* {redline}")
+        if patch:
+            lines.append(f"- *Policy or control patch:* {patch}")
+        blocks.append("\n".join(lines))
+
+    prevention = str(plan.get("prevention") or "").strip()
+    if prevention:
+        blocks.append(f"**5. Prevention** — {prevention}")
+
+    # One stray field is not a breakdown; show it only when the block is real.
+    return "\n\n".join(blocks) if len(blocks) >= 3 else ""
+
+
 def _counts(findings: list[dict]) -> tuple[int, int, int]:
     fails = sum(1 for f in findings if f["status"] == "Fail")
     warnings = sum(1 for f in findings if f["status"] == "Warning")
@@ -124,6 +159,9 @@ def render_full_report(
                 "disclosure gap, not a violation)*\n"
             )
         parts.append(f"**Recommended change**\n\n{finding['remediation_note']}\n")
+        block = _remediation_block(finding)
+        if block:
+            parts.append(f"### Executive remediation\n\n{block}\n")
 
     if passing:
         parts.append("## In scope and passing\n")
