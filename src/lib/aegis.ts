@@ -248,6 +248,76 @@ export type Artifact = {
 
 export type ArtifactSummary = { id: string; kind: ArtifactKind; company: string; createdAt: string; title: string; placeholders: string[] }
 
+/* ---------- Continuous monitoring ---------- */
+
+export type MonitoringStatus = 'clean' | 'drift_detected' | 'error'
+
+/** One row of `monitoring_snapshots`: an immutable check result. */
+export type MonitoringSnapshot = {
+  id: string
+  targetId: string
+  checkedAt: string
+  contentHash: string
+  driftDetected: boolean
+  diffSummary: string | null
+  auditDocId: string | null
+  openGapsCount: number
+  highGapsCount: number
+}
+
+/** A snapshot joined with its target, as `/api/monitoring/history` returns it. */
+export type MonitoringHistoryItem = MonitoringSnapshot & { clientName: string; url: string; label: string }
+
+export type MonitoringTarget = {
+  id: string
+  clientName: string
+  url: string
+  label: string
+  checkFrequency: string
+  alertWebhookUrl: string | null
+  active: boolean
+  createdAt: string
+  lastCheckedAt: string | null
+  lastStatus: MonitoringStatus | null
+  hasBaseline: boolean
+  latestSnapshot: MonitoringSnapshot | null
+}
+
+export type MonitoringCounts = { total: number; active: number; drifted: number; errors: number }
+
+/** The result of one sweep. `checkedAt` is absent on the sweep-all error fallback. */
+export type SweepResult = {
+  targetId: string
+  clientName: string
+  url: string
+  label: string
+  checkedAt?: string
+  status: MonitoringStatus
+  driftDetected: boolean
+  contentHash?: string | null
+  diffSummary?: string | null
+  auditDocId?: string | null
+  openGapsCount: number
+  highGapsCount: number
+  llmCalls: number
+  tokensUsed: number
+  error: string | null
+}
+
+/** The nightly digest returned by `POST /api/monitoring/sweep-all`. */
+export type SweepDigest = {
+  sweptAt: string
+  targetsChecked: number
+  clean: number
+  drifted: number
+  errored: number
+  openGaps: number
+  highGaps: number
+  tokensUsed: number
+  results: SweepResult[]
+  summary: string
+}
+
 export const ACCEPTED = '.pdf,.docx,.txt,.md'
 export const ACCEPTED_LABEL = 'PDF, DOCX or TXT'
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -361,6 +431,33 @@ export async function createArtifact(input: {
 
 export const fetchArtifact = (id: string) => json<Artifact>(`/api/artifacts/${id}`)
 export const fetchArtifacts = async () => (await json<{ artifacts: ArtifactSummary[] }>('/api/artifacts')).artifacts
+
+export const fetchMonitoringTargets = () =>
+  json<{ targets: MonitoringTarget[]; counts: MonitoringCounts }>('/api/monitoring/targets')
+
+export async function createMonitoringTarget(input: {
+  clientName: string
+  url: string
+  label?: string
+  alertWebhookUrl?: string
+}): Promise<MonitoringTarget> {
+  return json<MonitoringTarget>('/api/monitoring/targets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export const deleteMonitoringTarget = (id: string) =>
+  json<{ purged: boolean; active: boolean }>(`/api/monitoring/targets/${id}`, { method: 'DELETE' })
+
+export const sweepMonitoringTarget = (id: string) =>
+  json<SweepResult>(`/api/monitoring/targets/${id}/sweep`, { method: 'POST' })
+
+export const sweepAllMonitoring = () => json<SweepDigest>('/api/monitoring/sweep-all', { method: 'POST' })
+
+export const fetchMonitoringHistory = async (limit = 50) =>
+  (await json<{ snapshots: MonitoringHistoryItem[]; count: number }>(`/api/monitoring/history?limit=${limit}`)).snapshots
 
 export function reportUrl(id: string, kind: 'full' | 'teaser') {
   return `/api/documents/${id}/report?kind=${kind}`

@@ -22,6 +22,7 @@ import { NotFound } from './NotFound'
 import { BriefReport } from './BriefReport'
 import { DiffReport } from './DiffReport'
 import { FootprintAudit } from './FootprintAudit'
+import { Monitoring } from './Monitoring'
 import { RedTeamLab, RedTeamReport } from './RedTeamLab'
 import {
   deleteDocument,
@@ -863,6 +864,7 @@ const TABS: { label: string; href: string; step?: string }[] = [
   { label: 'Red-team', href: '/redteam', step: '2' },
   { label: 'Artifacts', href: '/artifacts', step: '3' },
   { label: 'Documents', href: '/documents' },
+  { label: 'Monitoring', href: '/monitoring' },
   { label: 'Console', href: '/console' },
 ]
 
@@ -877,6 +879,7 @@ export type WorkspaceView =
   | 'redteamRun'
   | 'artifacts'
   | 'artifact'
+  | 'monitoring'
   | 'console'
   | 'notFound'
 
@@ -892,9 +895,11 @@ export function Workspace({ view }: { view: WorkspaceView }) {
           ? '/redteam'
           : view === 'artifacts' || view === 'artifact'
             ? '/artifacts'
-            : view === 'console'
-              ? '/console'
-              : '/'
+            : view === 'monitoring'
+              ? '/monitoring'
+              : view === 'console'
+                ? '/console'
+                : '/'
 
   return (
     <div className="app-shell min-h-screen bg-bg">
@@ -909,7 +914,7 @@ export function Workspace({ view }: { view: WorkspaceView }) {
             </div>
 
             <div className="flex items-center gap-3">
-              <nav aria-label="Workspace" className="hidden items-center md:flex">
+              <nav aria-label="Workspace" className="hidden items-center lg:flex">
                 {TABS.map((tab) => (
                   <Link
                     key={tab.href}
@@ -938,10 +943,10 @@ export function Workspace({ view }: { view: WorkspaceView }) {
             </div>
           </div>
 
-          {/* The same five destinations stay reachable below the md breakpoint. */}
+          {/* The same destinations stay reachable below the lg breakpoint. */}
           <nav
             aria-label="Workspace"
-            className="-mx-5 overflow-x-auto border-t border-line px-5 sm:-mx-8 sm:px-8 md:hidden"
+            className="-mx-5 overflow-x-auto border-t border-line px-5 sm:-mx-8 sm:px-8 lg:hidden"
           >
             <ul className="flex w-max items-center gap-1 py-2">
               {TABS.map((tab) => (
@@ -992,6 +997,8 @@ export function Workspace({ view }: { view: WorkspaceView }) {
           <ArtifactsPage />
         ) : view === 'artifact' ? (
           <ArtifactsPage artifactId={id} />
+        ) : view === 'monitoring' ? (
+          <Monitoring />
         ) : view === 'console' ? (
           <Console />
         ) : view === 'notFound' ? (

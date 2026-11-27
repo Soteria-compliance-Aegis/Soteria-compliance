@@ -17,6 +17,7 @@ const routes = [
   { path: '/artifacts/:id', title: 'Draft', render: () => <Workspace view="artifact" /> },
   { path: '/documents', title: 'Documents', render: () => <Workspace view="library" /> },
   { path: '/documents/:id', title: 'Audit', render: () => <Workspace view="document" /> },
+  { path: '/monitoring', title: 'Monitoring', render: () => <Workspace view="monitoring" /> },
   { path: '/brief/:id', title: 'Mini-audit', render: () => <Workspace view="brief" /> },
   { path: '/console', title: 'Console', render: () => <Workspace view="console" /> },
 ]

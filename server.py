@@ -24,10 +24,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +37,7 @@ import auditor
 import console
 import diff_engine
 import fetcher
+import monitoring
 import redteam
 import reporter
 from rules import NA_STATUS, OPEN_STATUSES, REGULATIONS
@@ -1097,6 +1099,183 @@ def download_report(document_id: str, kind: str = "full") -> PlainTextResponse:
 
 
 # --------------------------------------------------------------------------- #
+# Continuous external monitoring
+# --------------------------------------------------------------------------- #
+
+
+def _audit_monitored_page(text: str, source: str) -> tuple[list[dict[str, Any]], str]:
+    """Grade a drifted page and keep it as a normal audited document.
+
+    The saved row is what ``monitoring_snapshots.audit_doc_id`` points at, so a
+    drift alert opens the same five-part remediation view as an upload.
+    """
+    findings = auditor.audit_document(text, source=source)
+    document_id = uuid.uuid4().hex[:12]
+    with _lock:
+        _db().execute(
+            "INSERT INTO documents (id, name, file_type, size_bytes, chars, created_at,"
+            " audited_at, status, source, text, findings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                document_id,
+                source[:120],
+                "url",
+                len(text.encode("utf-8")),
+                len(text),
+                _now(),
+                _now(),
+                "ready",
+                source,
+                text,
+                json.dumps(findings),
+            ),
+        )
+        _db().commit()
+    return findings, document_id
+
+
+@app.get("/api/monitoring/targets")
+def list_monitoring_targets() -> dict[str, Any]:
+    targets = monitoring.list_targets()
+    return {
+        "targets": targets,
+        "counts": {
+            "total": len(targets),
+            "active": sum(1 for item in targets if item["active"]),
+            "drifted": sum(1 for item in targets if item["lastStatus"] == monitoring.STATUS_DRIFT),
+            "errors": sum(1 for item in targets if item["lastStatus"] == monitoring.STATUS_ERROR),
+        },
+    }
+
+
+@app.post("/api/monitoring/targets", status_code=201)
+def create_monitoring_target(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add a public URL (homepage, policy, terms, pricing, AI page) to watch."""
+    try:
+        url = fetcher.validate_public_url(str(payload.get("url") or ""))
+    except fetcher.FetchError as exc:
+        raise HTTPException(400, exc.message) from exc
+
+    webhook = str(payload.get("alertWebhookUrl") or payload.get("alert_webhook_url") or "").strip()
+    if webhook and urlparse(webhook).scheme.lower() not in ("http", "https"):
+        raise HTTPException(400, "The alert webhook must be an http:// or https:// URL.")
+
+    try:
+        return monitoring.create_target(
+            client_name=str(payload.get("clientName") or payload.get("client_name") or ""),
+            url=url,
+            label=str(payload.get("label") or "Website"),
+            check_frequency=str(payload.get("checkFrequency") or payload.get("check_frequency") or "daily"),
+            alert_webhook_url=webhook,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/monitoring/targets/{target_id}")
+def delete_monitoring_target(target_id: str, purge: bool = False) -> dict[str, Any]:
+    """Pause a target by default; ``?purge=true`` removes it and its history."""
+    try:
+        return monitoring.delete_target(target_id, purge=purge)
+    except KeyError as exc:
+        raise HTTPException(404, "No such monitored target.") from exc
+
+
+@app.post("/api/monitoring/targets/{target_id}/sweep")
+def sweep_monitoring_target(target_id: str) -> dict[str, Any]:
+    """Immediate drift check, with a full audit only when the content moved."""
+    try:
+        return monitoring.check_target_drift(target_id, audit=_audit_monitored_page)
+    except KeyError as exc:
+        raise HTTPException(404, "No such monitored target.") from exc
+
+
+# In-memory job store for asynchronous sweeps requested via ?async=true.
+_sweep_jobs: dict[str, dict[str, Any]] = {}
+_sweep_jobs_lock = threading.Lock()
+
+
+def _execute_sweep_job(job_id: str) -> None:
+    """Run a full sweep in the background and store its digest."""
+    try:
+        digest = monitoring.sweep_all(audit=_audit_monitored_page)
+        with _sweep_jobs_lock:
+            _sweep_jobs[job_id] = {
+                "status": "completed",
+                "digest": digest,
+                "error": None,
+                "completedAt": _now(),
+            }
+    except Exception as exc:  # noqa: BLE001 - a failed sweep is reported, not raised
+        with _sweep_jobs_lock:
+            _sweep_jobs[job_id] = {
+                "status": "failed",
+                "digest": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "completedAt": _now(),
+            }
+
+
+def sweep_all_monitoring_targets(
+    async_mode: bool = False,
+    background: BackgroundTasks = None,  # type: ignore[assignment]
+) -> Any:
+    """Nightly n8n entry point: every active target, one digest back.
+
+    By default the sweep runs synchronously and returns the full digest. Pass
+    ``?async=true`` to queue it as a background task and get a job id back
+    immediately (useful for callers with a short HTTP timeout, such as n8n
+    inside Docker); poll ``GET /api/monitoring/sweep-all/{job_id}`` for the
+    result.
+    """
+    if not async_mode:
+        return monitoring.sweep_all(audit=_audit_monitored_page)
+
+    job_id = uuid.uuid4().hex[:12]
+    with _sweep_jobs_lock:
+        _sweep_jobs[job_id] = {
+            "status": "running",
+            "digest": None,
+            "error": None,
+            "createdAt": _now(),
+        }
+    if background is not None:
+        background.add_task(_execute_sweep_job, job_id)
+    else:
+        threading.Thread(target=_execute_sweep_job, args=(job_id,), daemon=True).start()
+    return JSONResponse(
+        status_code=202,
+        content={"jobId": job_id, "status": "accepted"},
+    )
+
+
+@app.post("/api/monitoring/sweep-all")
+def _sweep_all_route(
+    background: BackgroundTasks = None,  # type: ignore[assignment]
+    async_mode: bool = Query(False, alias="async"),
+) -> Any:
+    """HTTP entry point; delegates to ``sweep_all_monitoring_targets``."""
+    return sweep_all_monitoring_targets(
+        async_mode=bool(async_mode), background=background
+    )
+
+
+@app.get("/api/monitoring/sweep-all/{job_id}")
+def get_sweep_job(job_id: str) -> dict[str, Any]:
+    """Poll an asynchronous sweep started with ``?async=true``."""
+    with _sweep_jobs_lock:
+        job = _sweep_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "No such sweep job.")
+    return {"jobId": job_id, **job}
+
+
+@app.get("/api/monitoring/history")
+def monitoring_history(limit: int = 50, target_id: str | None = None) -> dict[str, Any]:
+    snapshots = monitoring.history(limit=limit, target_id=target_id)
+    return {"snapshots": snapshots, "count": len(snapshots)}
+
+
+# --------------------------------------------------------------------------- #
 # Static workspace
 # --------------------------------------------------------------------------- #
 
@@ -1126,7 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
     # Deliberately not read from PORT: shells and tooling often set it for
     # unrelated reasons, and the docs (and the Vite proxy) expect 8000.
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     args = parser.parse_args(argv)
     if not os.getenv("GROQ_API_KEY"):
         print("[server] GROQ_API_KEY is missing; uploads will fail until it is in .env")
