@@ -1,0 +1,11 @@
+groq>=0.9.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+python-dotenv>=1.0.0
+fastapi>=0.110.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9
+pypdf>=4.0.0
+python-docx>=1.1.0
+# Optional: required only when DATABASE_URL points at Postgres (Neon, Supabase, ...)
+# psycopg[binary]>=3.1

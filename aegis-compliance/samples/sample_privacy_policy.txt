@@ -1,0 +1,16 @@
+Acme AI, Inc. — Privacy Policy (sample text for offline testing)
+
+We collect account information, usage logs, and the content you submit to our
+AI assistant. We use this information to operate the service, improve model
+quality, and communicate with you.
+
+Automated tools help us screen support tickets and rank candidates in our
+recruiting pipeline. We do not currently offer a way to opt out of these
+automated processes, and we do not describe how a person can request human
+review of an automated decision.
+
+Our models are 100% unbiased and fully HIPAA compliant. Customer prompts may be
+processed by third-party LLM providers for inference and model training.
+
+We conduct annual security reviews and follow industry best practices for
+protecting customer data.
